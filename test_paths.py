@@ -1,4 +1,5 @@
 from typing import Self
+from plc import BRIDGE, TROLLEY
 
 EPSILON = 1e-9
 
@@ -140,6 +141,17 @@ def path_valid(yard: Yard, forbidden_zones: list[Rect], path: list[Point]) -> bo
     return True
 
 
+def naive_total_time(path: list[Point]) -> float:
+    total_time = 0
+    for i in range(len(path) - 1):
+        a = path[i]
+        b = path[i + 1]
+        trolley_dist = abs(a.y - b.y)
+        bridge_dist = abs(a.x - b.x)
+        total_time += max(TROLLEY.time(trolley_dist), BRIDGE.time(bridge_dist))
+    return total_time
+
+
 if __name__ == "__main__":
     # A bunch of tests.
     assert seg_seg_intersect(Point(0, 1), Point(0, -1), Point(1, 0), Point(-1, 0)), (
@@ -173,10 +185,18 @@ if __name__ == "__main__":
     ), "Path is inside yard and doesn't cross forbidden zones"
 
     # Example of valid path from A to B in the test problem.
+    path1 = [a, Point(40, 14), Point(55, 14), b]
     assert path_valid(
-        yard, [forbidden1, forbidden2], [a, Point(40, 14), Point(55, 14), b]
+        yard,
+        [forbidden1, forbidden2],
+        path1,
     ), "Path is inside yard and doesn't cross forbidden zones"
+    print("Naive total time:", naive_total_time(path1))
     # Another valid path
-    assert path_valid(yard, [forbidden1, forbidden2], [a, Point(58, 12), b]), (
+    path2 = [a, Point(58, 12), b]
+    assert path_valid(yard, [forbidden1, forbidden2], path2), (
         "Path is inside yard and doesn't cross forbidden zones"
     )
+    print("Naive total time:", naive_total_time(path2))
+    # Not a valid path, but just to see how well we can do
+    print("Naive total time:", naive_total_time([a, b]))
