@@ -13,7 +13,6 @@ import sympy as sp
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 
-
 # ---------------------------------------------------------------------------
 # Symbols
 # ---------------------------------------------------------------------------
@@ -308,8 +307,10 @@ class TrajectoryChain:
     """A sequence of moves along one axis, run back to back.
 
     Each move has to pick up exactly where the previous one left off: same
-    axis, same position, same time. Once chained, the sequence answers the
-    same questions as a single `Trajectory` does.
+    axis, same position, and no earlier in time. A move that starts later than
+    the previous one ended is the axis standing still in between, waiting for
+    the other axis to catch up. Once chained, the sequence answers the same
+    questions as a single `Trajectory` does.
     """
 
     TOL = 1e-9  # slack allowed on the tail-head match
@@ -329,10 +330,10 @@ class TrajectoryChain:
                     f"trajectory {i} ends at x={prev.x_end} but trajectory "
                     f"{i + 1} starts at x={nxt.x0}"
                 )
-            if abs(nxt.t0 - prev.t_end) > self.TOL:
+            if nxt.t0 < prev.t_end - self.TOL:
                 raise ValueError(
-                    f"trajectory {i} ends at t={prev.t_end} but trajectory "
-                    f"{i + 1} starts at t={nxt.t0}"
+                    f"trajectory {i + 1} starts at t={nxt.t0}, before "
+                    f"trajectory {i} ends at t={prev.t_end}"
                 )
 
     def __repr__(self) -> str:
@@ -458,6 +459,35 @@ class Trajectory2D:
         self.bridge = bridge
         self.trolley = trolley
 
+    @classmethod
+    def through(cls, points, bridge=None, trolley=None, t0: float = 0.0):
+        """Build the move that starts and stops at each of `points`.
+
+        Both axes set off together at the start of a leg, and the one that
+        gets there first waits at the waypoint until the other arrives, so
+        the load comes to a full stop on every point. Each leg therefore
+        costs the slower of the two axes.
+
+        `points` is a list of (bridge, trolley) tuples. The axes default to
+        BRIDGE and TROLLEY.
+        """
+        bridge = BRIDGE if bridge is None else bridge
+        trolley = TROLLEY if trolley is None else trolley
+
+        waypoints = [(float(x), float(y)) for x, y in points]
+        if len(waypoints) < 2:
+            raise ValueError("need at least two points to move between")
+
+        bridge_moves, trolley_moves = [], []
+        (x, y), start = waypoints[0], float(t0)
+        for next_x, next_y in waypoints[1:]:
+            bridge_moves.append(bridge.trajectory(next_x - x, x, start))
+            trolley_moves.append(trolley.trajectory(next_y - y, y, start))
+            start += max(bridge_moves[-1].duration, trolley_moves[-1].duration)
+            x, y = next_x, next_y
+
+        return cls(TrajectoryChain(bridge_moves), TrajectoryChain(trolley_moves))
+
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}({self.start} -> {self.end}, "
@@ -562,15 +592,12 @@ TROLLEY = Component(a_max=0.25, v_max=1, t_sway=5)
 
 
 if __name__ == "__main__":
-    print(BRIDGE)
-    btraj = BRIDGE.trajectory(58, 0, 0)
-    bchain = TrajectoryChain([btraj])
-
-    ttraj = TROLLEY.trajectory(-6, 12, btraj.t_end - 30)
-
-    tchain = TrajectoryChain([ttraj])
-
-    
-    move = Trajectory2D(bchain, tchain)
-    print(move, move.t_end)
+    # A route given as (bridge, trolley) waypoints. The load comes to a full
+    # stop on each one: both axes set off together at the start of a leg and
+    # the faster of the two waits at the waypoint for the slower to arrive.
+    points = [(0, 12), (58, 14), (58, 6)]
+    move = Trajectory2D.through(points)
+    print(move)
+    print(f"total time: {move.duration} s")
     move.plot()
+
