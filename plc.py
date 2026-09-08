@@ -11,6 +11,7 @@ from typing import NamedTuple, Optional
 import numpy as np
 import sympy as sp
 import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 
 
 # ---------------------------------------------------------------------------
@@ -92,22 +93,44 @@ def _derive() -> Symbolic:
 SYM = _derive()
 
 
+# Lambdify once: a profile's shape depends only on (j, t_p, lambda).
+_EVAL = {
+    name: sp.lambdify((t, j_s, tp_s, lam_s), expr, "numpy")
+    for name, expr in (
+        ("jerk", SYM.jerk),
+        ("accel", SYM.accel),
+        ("vel", SYM.vel),
+        ("pos", SYM.pos),
+    )
+}
+
+
+def _plot_profile(t, jerk, accel, vel, pos, boundaries=()):
+    """Draw jerk/accel/vel/pos on four stacked axes.
+
+    `boundaries` marks the times where one move hands over to the next.
+    """
+    fig, ax = plt.subplots(4, 1, sharex=True, figsize=(8, 6))
+    for a, values, label, unit in zip(
+        ax,
+        (jerk, accel, vel, pos),
+        ("jerk", "accel", "vel", "pos"),
+        ("m/s³", "m/s²", "m/s", "m"),
+    ):
+        a.plot(t, values, label=label)
+        a.set_ylabel(f"{label} ({unit})")
+        for boundary in boundaries:
+            a.axvline(boundary, color="grey", linestyle="--", linewidth=0.8)
+        a.grid()
+        a.legend()
+    ax[3].set_xlabel("time (s)")
+    plt.tight_layout()
+    plt.show()
+
+
 # ---------------------------------------------------------------------------
 # One axis
 # ---------------------------------------------------------------------------
-
-
-class Profile(NamedTuple):
-    """The concrete profile chosen for one move."""
-
-    time: float      # total duration, 4*tp + lambda
-    n: int           # sway periods per jerk pulse
-    tp: float        # jerk pulse width, n * t_sway
-    j: float         # jerk
-    ap: float        # peak acceleration, j * tp
-    vp: float        # peak (cruise) velocity, j * tp**2
-    lam: float       # cruise duration
-    saturated: bool  # True if the move is long enough to reach v_max
 
 
 class Component:
@@ -124,7 +147,7 @@ class Component:
             f"v_max={self.v_max}, t_sway={self.t_sway})"
         )
 
-    def n_max(self, distance) -> int:
+    def n_max(self) -> int:
         """Sway periods needed for the accel phase to reach v_max.
 
         Beyond this the velocity saturates and a cruise phase is required.
@@ -136,96 +159,418 @@ class Component:
         """Shortest possible move: one sway period per jerk pulse."""
         return 4.0 * self.t_sway
 
-    def n(self, distance: float) -> float:
-        """Time to move `distance` along this axis."""
+    def n(self, distance: float) -> int:
+        """Sway periods per jerk pulse needed to cover `distance`."""
         return math.ceil(np.sqrt(abs(distance) / (2 * self.a_max * self.t_sway**2)))
 
-    def profile(self, distance: float) -> Profile:
-        """Choose the profile covering `distance`."""
-        distance = abs(float(distance))
-        n, n_max = self.n(distance), self.n_max(distance)
+    def trajectory(
+        self, distance: float, x0: float = 0.0, t0: float = 0.0
+    ) -> "Trajectory":
+        """The move covering `distance`, starting at `x0` at time `t0`."""
+        return Trajectory(self, distance, x0, t0)
 
-        if n == 0:  # standing still
-            return Profile(0.0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, False)
+    def plot_dist_time(self, ax):
+        dist_range = np.linspace(0, 100, 200)
+        time_values = [self.trajectory(d).duration for d in dist_range]
+        ax.plot(dist_range, time_values, label="Bridge")
 
-        if n < n_max:
-            # Short move: velocity never saturates, so there is no cruise and
-            # the jerk is whatever covers the distance in four pulses.
-            tp = self.t_sway * n
-            j = distance/(2 * tp**3)
-            ap = j * tp
-            vp = j * tp**2
-            lam = 0.0
-            saturated = False
-            time = 4.0 * n * self.t_sway
+
+# ---------------------------------------------------------------------------
+# One move
+# ---------------------------------------------------------------------------
+
+
+class Trajectory:
+    """A single anti-sway move along one axis.
+
+    All five phases -- jerk up, jerk down, cruise, jerk down, jerk up -- are
+    always present; a move too short to reach v_max simply gets a cruise phase
+    of zero length. `distance` is signed, and the trajectory knows where (`x0`)
+    and when (`t0`) it starts, so it can be evaluated on an absolute time axis
+    and chained with the moves before and after it.
+    """
+
+    def __init__(
+        self,
+        component: Component,
+        distance: float,
+        x0: float = 0.0,
+        t0: float = 0.0,
+    ):
+        self.component = component
+        self.distance = float(distance)
+        self.x0 = float(x0)
+        self.t0 = float(t0)
+
+        d = abs(self.distance)
+        sign = math.copysign(1.0, self.distance)
+
+        # Widen the pulses until the acceleration limit is met, but never past
+        # n_max: beyond that the velocity has saturated, so longer pulses buy
+        # no extra speed and only stretch the move.
+        self.n = min(component.n(d), component.n_max())
+
+        if self.n == 0:
+            # Standing still: five empty phases.
+            self.tp = self.j = self.lam = 0.0
+            self.saturated = False
         else:
-            # Long move: clamp to n_max, run at v_max, and cruise for the rest.
-            n = n_max
-            tp = self.t_sway * n
-            ap = self.v_max / tp
-            vp = ap * tp
-            j = ap / tp    
-            lam = float(SYM.lam.subs({d_s: distance, j_s: j, tp_s: tp}))
-            lam, saturated = max(lam, 0.0), True
+            self.tp = component.t_sway * self.n
+            # Cruise at v_max for whatever the four pulses leave over.
+            j_max = component.v_max / self.tp**2
+            lam = float(SYM.lam.subs({d_s: d, j_s: j_max, tp_s: self.tp}))
+            self.saturated = lam > 0.0     # does the move reach v_max?
 
-        return Profile(
-            time=4.0 * tp + lam,
-            n=n,
-            tp=tp,
-            j=j,
-            ap = ap, 
-            vp = vp,
-            lam=lam,
-            saturated=saturated,
+            if self.saturated:
+                self.j, self.lam = sign * j_max, lam
+            else:
+                # The four pulses alone already overshoot d, so there is no
+                # cruise and the jerk backs off to cover exactly d instead.
+                self.j, self.lam = sign * d / (2 * self.tp**3), 0.0
+
+        self.ap = self.j * self.tp                  # peak acceleration
+        self.vp = self.j * self.tp**2               # peak (cruise) velocity
+        self.duration = 4.0 * self.tp + self.lam
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}(distance={self.distance}, x0={self.x0}, "
+            f"t0={self.t0}, n={self.n}, j={self.j}, tp={self.tp}, "
+            f"lam={self.lam}, duration={self.duration})"
         )
 
-    def time(self, distance: float) -> float:
-        """Time to move `distance` along this axis."""
-        return self.profile(distance).time
+    @property
+    def t_end(self) -> float:
+        """When the move finishes."""
+        return self.t0 + self.duration
 
-    def sample(self, distance: float, n_points: int = 600):
-        """Evaluate the profile on a time grid, for plotting.
+    @property
+    def x_end(self) -> float:
+        """Where the move finishes."""
+        return self.x0 + self.distance
+
+    @property
+    def phases(self) -> tuple:
+        """The five (jerk, duration) pairs, in order."""
+        return (
+            (self.j, self.tp),
+            (-self.j, self.tp),
+            (0.0, self.lam),
+            (-self.j, self.tp),
+            (self.j, self.tp),
+        )
+
+    def _eval(self, name: str, time, offset: float = 0.0):
+        # Before t0 and after t_end the axis sits still, so clamping the query
+        # into the profile extends it with the right constant.
+        local = np.clip(np.asarray(time, dtype=float) - self.t0, 0.0, self.duration)
+        values = np.asarray(_EVAL[name](local, self.j, self.tp, self.lam), dtype=float)
+        # A degenerate profile can collapse to a constant, which lambdify
+        # returns as a scalar rather than an array.
+        out = np.broadcast_to(values, local.shape) + offset
+        return float(out) if out.ndim == 0 else out
+
+    def jerk(self, time):
+        """Jerk at absolute time(s) `time`."""
+        return self._eval("jerk", time)
+
+    def accel(self, time):
+        """Acceleration at absolute time(s) `time`."""
+        return self._eval("accel", time)
+
+    def vel(self, time):
+        """Velocity at absolute time(s) `time`."""
+        return self._eval("vel", time)
+
+    def pos(self, time):
+        """Position at absolute time(s) `time`, measured from x0."""
+        return self._eval("pos", time, self.x0)
+
+    def sample(self, n_points: int = 600):
+        """Evaluate the trajectory on a time grid, for plotting.
 
         Returns (t, jerk, accel, vel, pos) as numpy arrays.
         """
-        prof = self.profile(distance)
-        subs = {j_s: prof.j, tp_s: prof.tp, lam_s: prof.lam}
-        grid = np.linspace(0.0, prof.time or 1.0, n_points)
+        end = self.t_end if self.duration > 0.0 else self.t0 + 1.0
+        grid = np.linspace(self.t0, end, n_points)
+        return grid, self.jerk(grid), self.accel(grid), self.vel(grid), self.pos(grid)
 
-        out = [grid]
-        for expr in (SYM.jerk, SYM.accel, SYM.vel, SYM.pos):
-            f = sp.lambdify(t, expr.subs(subs), "numpy")
-            # A degenerate profile can collapse to a constant, which lambdify
-            # returns as a scalar rather than an array.
-            values = np.asarray(f(grid), dtype=float)
-            out.append(np.broadcast_to(values, grid.shape).copy())
-        return tuple(out)
-    
-    def plot_dist_time(self, ax):
-        dist_range = np.linspace(0, 100, 200)
-        time_values = [self.time(d) for d in dist_range]
-        ax.plot(dist_range, time_values, label="Bridge")
-       
-    
-    def plot(self, distance: float, n_points: int = 600):
-        fig, ax = plt.subplots(4, 1, sharex=True, figsize=(8, 6))
-        t, jerk, accel, vel, pos = self.sample(distance, n_points)
-        ax[0].plot(t, jerk, label="jerk")
-        ax[1].plot(t, accel, label="accel")
-        ax[2].plot(t, vel, label="vel")
-        ax[3].plot(t, pos, label="pos")
-        ax[0].set_ylabel("jerk (m/s³)")
-        ax[1].set_ylabel("accel (m/s²)")
-        ax[2].set_ylabel("vel (m/s)")
-        ax[3].set_ylabel("pos (m)")
-        ax[3].set_xlabel("time (s)")
-        for a in ax:
-            a.grid()
-            a.legend()
-        plt.tight_layout()
-        plt.show()
+    def plot(self, n_points: int = 600):
+        _plot_profile(*self.sample(n_points))
+
+
+# ---------------------------------------------------------------------------
+# A sequence of moves
+# ---------------------------------------------------------------------------
+
+
+class TrajectoryChain:
+    """A sequence of moves along one axis, run back to back.
+
+    Each move has to pick up exactly where the previous one left off: same
+    axis, same position, same time. Once chained, the sequence answers the
+    same questions as a single `Trajectory` does.
+    """
+
+    TOL = 1e-9  # slack allowed on the tail-head match
+
+    def __init__(self, trajectories):
+        self.trajectories = tuple(trajectories)
+        if not self.trajectories:
+            raise ValueError("a chain needs at least one trajectory")
+
+        for i, (prev, nxt) in enumerate(zip(self.trajectories, self.trajectories[1:])):
+            if nxt.component is not prev.component:
+                raise ValueError(
+                    f"trajectory {i + 1} runs on a different axis than trajectory {i}"
+                )
+            if abs(nxt.x0 - prev.x_end) > self.TOL:
+                raise ValueError(
+                    f"trajectory {i} ends at x={prev.x_end} but trajectory "
+                    f"{i + 1} starts at x={nxt.x0}"
+                )
+            if abs(nxt.t0 - prev.t_end) > self.TOL:
+                raise ValueError(
+                    f"trajectory {i} ends at t={prev.t_end} but trajectory "
+                    f"{i + 1} starts at t={nxt.t0}"
+                )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}({len(self)} moves, "
+            f"x0={self.x0} -> {self.x_end}, t0={self.t0} -> {self.t_end})"
+        )
+
+    def __len__(self) -> int:
+        return len(self.trajectories)
+
+    def __iter__(self):
+        return iter(self.trajectories)
+
+    def __getitem__(self, index):
+        return self.trajectories[index]
+
+    @property
+    def component(self) -> Component:
+        """The axis the whole chain runs on."""
+        return self.trajectories[0].component
+
+    @property
+    def t0(self) -> float:
+        """When the first move starts."""
+        return self.trajectories[0].t0
+
+    @property
+    def x0(self) -> float:
+        """Where the first move starts."""
+        return self.trajectories[0].x0
+
+    @property
+    def t_end(self) -> float:
+        """When the last move finishes."""
+        return self.trajectories[-1].t_end
+
+    @property
+    def x_end(self) -> float:
+        """Where the last move finishes."""
+        return self.trajectories[-1].x_end
+
+    @property
+    def duration(self) -> float:
+        """Time from the start of the first move to the end of the last."""
+        return self.t_end - self.t0
+
+    @property
+    def distance(self) -> float:
+        """Net displacement over the whole chain."""
+        return self.x_end - self.x0
+
+    def _eval(self, name: str, time):
+        # Hand each query time to the move that owns it. Outside the chain the
+        # first and last move clamp to their own resting state, which is what
+        # standing still before and after the sequence looks like.
+        grid = np.atleast_1d(np.asarray(time, dtype=float))
+        ends = np.array([tr.t_end for tr in self.trajectories])
+        idx = np.clip(np.searchsorted(ends, grid, side="left"), 0, len(self) - 1)
+
+        out = np.empty(grid.shape)
+        for i in np.unique(idx):
+            mask = idx == i
+            out[mask] = getattr(self.trajectories[i], name)(grid[mask])
+        return float(out[0]) if np.ndim(time) == 0 else out
+
+    def jerk(self, time):
+        """Jerk at absolute time(s) `time`."""
+        return self._eval("jerk", time)
+
+    def accel(self, time):
+        """Acceleration at absolute time(s) `time`."""
+        return self._eval("accel", time)
+
+    def vel(self, time):
+        """Velocity at absolute time(s) `time`."""
+        return self._eval("vel", time)
+
+    def pos(self, time):
+        """Position at absolute time(s) `time`."""
+        return self._eval("pos", time)
+
+    def sample(self, n_points: int = 600):
+        """Evaluate the whole chain on a time grid, for plotting.
+
+        Returns (t, jerk, accel, vel, pos) as numpy arrays.
+        """
+        end = self.t_end if self.duration > 0.0 else self.t0 + 1.0
+        grid = np.linspace(self.t0, end, n_points)
+        return grid, self.jerk(grid), self.accel(grid), self.vel(grid), self.pos(grid)
+
+    def plot(self, n_points: int = 600):
+        _plot_profile(
+            *self.sample(n_points),
+            boundaries=[tr.t_end for tr in self.trajectories[:-1]],
+        )
+
+
+# ---------------------------------------------------------------------------
+# Both axes at once
+# ---------------------------------------------------------------------------
+
+
+def _moves(chain):
+    """The individual moves of a chain, or the single move of a trajectory."""
+    return getattr(chain, "trajectories", (chain,))
+
+
+class Trajectory2D:
+    """A bridge motion and a trolley motion, run side by side.
+
+    The bridge supplies the x coordinate and the trolley the y coordinate. The
+    two need not cover the same time span: both are evaluated on one common
+    time axis, and an axis that has already finished -- or has not started yet
+    -- simply stands still while the other one moves.
+
+    Either side may be a `Trajectory` or a `TrajectoryChain`.
+    """
+
+    def __init__(self, bridge, trolley):
+        if bridge.component is trolley.component:
+            raise ValueError("bridge and trolley must run on different axes")
+        self.bridge = bridge
+        self.trolley = trolley
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}({self.start} -> {self.end}, "
+            f"t0={self.t0} -> {self.t_end})"
+        )
+
+    @property
+    def t0(self) -> float:
+        """When the first of the two axes starts moving."""
+        return min(self.bridge.t0, self.trolley.t0)
+
+    @property
+    def t_end(self) -> float:
+        """When the last of the two axes finishes."""
+        return max(self.bridge.t_end, self.trolley.t_end)
+
+    @property
+    def duration(self) -> float:
+        """Total time the combined move takes."""
+        return self.t_end - self.t0
+
+    @property
+    def start(self) -> tuple:
+        """Where the move begins, as (bridge, trolley)."""
+        return (self.bridge.x0, self.trolley.x0)
+
+    @property
+    def end(self) -> tuple:
+        """Where the move ends, as (bridge, trolley)."""
+        return (self.bridge.x_end, self.trolley.x_end)
+
+    @property
+    def handovers(self) -> list:
+        """Times where either axis hands over from one move to the next.
+
+        The last move of each axis ends the axis rather than handing over, so
+        it is left out -- the same boundaries `TrajectoryChain.plot` draws.
+        """
+        moves = (*_moves(self.bridge)[:-1], *_moves(self.trolley)[:-1])
+        return sorted({move.t_end for move in moves})
+
+    def pos(self, time) -> tuple:
+        """Position at absolute time(s) `time`, as (bridge, trolley)."""
+        return (self.bridge.pos(time), self.trolley.pos(time))
+
+    def sample(self, n_points: int = 600):
+        """Evaluate both axes on a common time grid, for plotting.
+
+        Returns (t, x, y) as numpy arrays.
+        """
+        end = self.t_end if self.duration > 0.0 else self.t0 + 1.0
+        grid = np.linspace(self.t0, end, n_points)
+        return (
+            grid,
+            np.asarray(self.bridge.pos(grid), dtype=float),
+            np.asarray(self.trolley.pos(grid), dtype=float),
+        )
+
+    def plot(self, n_points: int = 600, ax=None):
+        """Plot the path traced through the yard, coloured by time.
+
+        Pass `ax` to draw onto existing axes (a yard outline, say); the axes
+        are returned either way.
+        """
+        grid, x, y = self.sample(n_points)
+
+        own_figure = ax is None
+        if own_figure:
+            _, ax = plt.subplots(figsize=(8, 5))
+
+        # Colour the path by time -- in real space the clock is otherwise
+        # invisible, and a corner where one axis waits for the other looks
+        # like any other.
+        points = np.stack([x, y], axis=1).reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        path = LineCollection(segments, cmap="viridis", array=grid[:-1], linewidth=2)
+        ax.add_collection(path)
+        ax.figure.colorbar(path, ax=ax, label="time (s)")
+
+        handovers = self.handovers
+        if handovers:
+            ax.plot(*self.pos(handovers), "o", color="grey", markersize=4,
+                    label="handover")
+        ax.plot(x[0], y[0], "o", color="tab:green", label="start")
+        ax.plot(x[-1], y[-1], "s", color="tab:red", label="end")
+
+        ax.set_xlabel("bridge (m)")
+        ax.set_ylabel("trolley (m)")
+        ax.set_aspect("equal")
+        ax.autoscale_view()
+        ax.grid()
+        ax.legend()
+        if own_figure:
+            plt.tight_layout()
+            plt.show()
+        return ax
 
 
 # Axis limits from toy_example.m
 BRIDGE = Component(a_max=0.30, v_max=2, t_sway=4)
 TROLLEY = Component(a_max=0.25, v_max=1, t_sway=5)
+
+
+if __name__ == "__main__":
+    print(BRIDGE)
+    btraj = BRIDGE.trajectory(58, 0, 0)
+    bchain = TrajectoryChain([btraj])
+
+    ttraj = TROLLEY.trajectory(-6, 12, btraj.t_end - 30)
+
+    tchain = TrajectoryChain([ttraj])
+
+    
+    move = Trajectory2D(bchain, tchain)
+    print(move, move.t_end)
+    move.plot()
