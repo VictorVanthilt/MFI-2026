@@ -60,8 +60,8 @@ yard_screenshot = Yard(
 )
 
 forbidden_zones_screenshot = [
-    Rect(Point(400, 83), Point(490, 192)),
-    Rect(Point(990, 300), Point(1100, 342)),
+    Rect(Point(400, 83), Point(490, 193)),
+    Rect(Point(990, 300), Point(1100, 343)),
 ]
 
 
