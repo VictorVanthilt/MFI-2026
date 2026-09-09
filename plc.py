@@ -354,11 +354,17 @@ class Trajectory:
     def _eval(self, name: str, time, offset: float = 0.0):
         # Before t0 and after t_end the axis sits still, so clamping the query
         # into the profile extends it with the right constant.
-        local = np.clip(np.asarray(time, dtype=float) - self.t0, 0.0, self.duration)
+        query = np.asarray(time, dtype=float)
+        local = np.clip(query - self.t0, 0.0, self.duration)
         values = np.asarray(_EVAL[name](local, self.j, self.tp, self.lam), dtype=float)
         # A degenerate profile can collapse to a constant, which lambdify
         # returns as a scalar rather than an array.
         out = np.broadcast_to(values, local.shape) + offset
+        if name == "jerk":
+            # Jerk is the one quantity the clamp gets wrong: the profile opens
+            # and closes on a pulse, so a query from outside the move would
+            # pick that pulse up instead of the standstill's zero.
+            out = np.where((query >= self.t0) & (query <= self.t_end), out, 0.0)
         return float(out) if out.ndim == 0 else out
 
     def jerk(self, time):
