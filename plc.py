@@ -179,6 +179,43 @@ class Component:
 # ---------------------------------------------------------------------------
 
 
+def _time_covered(j: float, tp: float, lam: float, x: float) -> float:
+    """How long a profile of shape (j, tp, lam) takes to cover `x`.
+
+    The inverse of `SYM.pos` -- jerkdist and jerkdistinv in the MATLAB -- and
+    no solver is needed for it. The first pulse is a plain cube root, the
+    cruise is a straight line, and the braking half is the accelerating half
+    run backwards, so only the second pulse takes any work: there
+    6x/j = t**3 - 2 (t - tp)**3, which the substitution t = 2 tp + w turns into
+    the depressed cubic w**3 - 6 tp**2 w + q. All three of its roots are real,
+    and the one inside the pulse -- w in [-tp, 0] -- is the middle branch of
+    the trigonometric form.
+
+    `j` and `x` are magnitudes: a move has the same shape whichever way it
+    runs. `x` outside the move clamps to its two ends.
+    """
+    if j <= 0.0 or tp <= 0.0:
+        return 0.0
+
+    total = j * tp**2 * (2.0 * tp + lam)
+    x = min(max(x, 0.0), total)
+
+    first_pulse = j * tp**3 / 6.0                      # covered as accel peaks
+    cruise_start = j * tp**3                           # ... as v_p is reached
+    cruise_end = cruise_start + j * tp**2 * lam        # ... as braking starts
+
+    if x <= first_pulse:
+        return float(np.cbrt(6.0 * x / j))
+    if x <= cruise_start:
+        q = 6.0 * x / j - 6.0 * tp**3
+        theta = math.acos(-q / (4.0 * math.sqrt(2.0) * tp**3))
+        root = math.sqrt(2.0) * math.cos(theta / 3.0 - 2.0 * math.pi / 3.0)
+        return 2.0 * tp * (1.0 + root)
+    if x <= cruise_end:
+        return 2.0 * tp + (x - cruise_start) / (j * tp**2)
+    return 4.0 * tp + lam - _time_covered(j, tp, lam, total - x)
+
+
 class Trajectory:
     """A single anti-sway move along one axis.
 
@@ -230,6 +267,26 @@ class Trajectory:
         self.ap = self.j * self.tp                  # peak acceleration
         self.vp = self.j * self.tp**2               # peak (cruise) velocity
         self.duration = 4.0 * self.tp + self.lam
+
+    @classmethod
+    def from_shape(cls, component, j, tp, lam, x0: float = 0.0, t0: float = 0.0):
+        """A move given by its profile rather than by the distance it covers.
+
+        Merging stretches the cruise phase of a move that is already running,
+        which leaves a profile no distance would have been given on its own,
+        so the shape has to be handed over as it stands.
+        """
+        move = cls.__new__(cls)
+        move.component = component
+        move.j, move.tp, move.lam = float(j), float(tp), float(lam)
+        move.n = round(move.tp / component.t_sway)
+        move.saturated = move.lam > 0.0
+        move.ap = move.j * move.tp
+        move.vp = move.j * move.tp**2
+        move.duration = 4.0 * move.tp + move.lam
+        move.distance = move.vp * (2.0 * move.tp + move.lam)
+        move.x0, move.t0 = float(x0), float(t0)
+        return move
 
     def __repr__(self) -> str:
         return (
@@ -284,6 +341,16 @@ class Trajectory:
     def pos(self, time):
         """Position at absolute time(s) `time`, measured from x0."""
         return self._eval("pos", time, self.x0)
+
+    def time_at(self, position) -> float:
+        """When the move passes `position` -- jerkdistinv in the MATLAB.
+
+        An axis never turns around within a move, so it passes each position
+        on the way exactly once. Positions short of the start or beyond the
+        end clamp to the move's own start and end times.
+        """
+        covered = (position - self.x0) * (1.0 if self.distance >= 0.0 else -1.0)
+        return self.t0 + _time_covered(abs(self.j), self.tp, self.lam, covered)
 
     def sample(self, n_points: int = 600):
         """Evaluate the trajectory on a time grid, for plotting.
@@ -488,6 +555,38 @@ class Trajectory2D:
 
         return cls(TrajectoryChain(bridge_moves), TrajectoryChain(trolley_moves))
 
+    @classmethod
+    def through_merged(cls, points, bridge=None, trolley=None, t0: float = 0.0):
+        """Build the move through `points` the way the PLC really drives it.
+
+        `through` stops dead on every waypoint. The PLC does better: it looks
+        at three points at a time and, where the geometry allows, lets one
+        axis run straight through the middle one while the other makes its
+        move in the shadow of that. The crane still passes exactly through
+        every point, and each axis still crosses a leg without turning around,
+        so a waypoint list that cleared the yard still clears it -- the load
+        just does not come to a standstill in between.
+
+        Three points at a time is a narrow view, so merging is not always a
+        win: joining two legs can push the move past the n it needs to stay
+        inside a_max, which widens all four of its pulses, and a joined move
+        is held back far enough to still pass the middle point. Together those
+        can cost a second or two more than the standstill they save. Rare --
+        one route in a few hundred, and only ever by a little -- but worth
+        knowing when this is what scores a route.
+
+        `points` is a list of (bridge, trolley) tuples. The axes default to
+        BRIDGE and TROLLEY.
+        """
+        bridge = BRIDGE if bridge is None else bridge
+        trolley = TROLLEY if trolley is None else trolley
+
+        waypoints = [(float(x), float(y)) for x, y in points]
+        if len(waypoints) < 2:
+            raise ValueError("need at least two points to move between")
+
+        return cls(*_Merger((bridge, trolley), waypoints[0], t0).run(waypoints))
+
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}({self.start} -> {self.end}, "
@@ -586,18 +685,252 @@ class Trajectory2D:
         return ax
 
 
+# ---------------------------------------------------------------------------
+# Merging
+# ---------------------------------------------------------------------------
+#
+# Translated from mergingcode/func_merging.m, with three transcription slips
+# in it put right on the way: func_n is handed a_max where t_sway belongs;
+# jerkdistinv is handed the auxiliary axis's index where the main axis's jerk
+# belongs, and that axis's distance too, when the value wanted is the moveP2.ti
+# computed two lines below; and the branch that cannot merge out of a
+# standstill leaves Flag_standstill clear although the crane does stop there.
+
+
+def _lone_axis(a, b) -> Optional[int]:
+    """The one axis that gets the crane from `a` to `b`, if there is one.
+
+    0 is the bridge and 1 the trolley, in the order they appear in a waypoint.
+    """
+    if a[0] == b[0]:
+        return 1
+    if a[1] == b[1]:
+        return 0
+    return None
+
+
+def _runs_through(axis: int, p1, p2, p3) -> bool:
+    """Can one axis take p1 -> p2 -> p3 in a single move?
+
+    Only if it does not turn around on the way. Merging sizes the joined move
+    on the distance from p1 to p3, and that is the distance actually travelled
+    only when both legs push the axis the same way. (The MATLAB skips the
+    check -- it is the sign checking left as a TODO in examplecheck.m -- and a
+    crane that doubles back would be given far too short a move.)
+    """
+    step, ahead = p2[axis] - p1[axis], p3[axis] - p2[axis]
+    return step * ahead >= 0.0 and step + ahead != 0.0
+
+
+class _Ongoing:
+    """The main-axis move the crane is in the middle of at a waypoint.
+
+    `moveP1` in the MATLAB: which axis carries the move, the move itself, and
+    `ti`, how far into it the crane is as it passes the waypoint.
+    """
+
+    def __init__(self, axis: int, move: Trajectory):
+        self.axis = axis
+        self.move = move
+        self.ti = 0.0
+
+    def reach(self, position: float):
+        """Note that the crane passes the waypoint at `position`."""
+        self.ti = self.move.time_at(position) - self.move.t0
+
+    def extend(self, distance: float):
+        """Stretch the cruise phase to carry the move `distance` further.
+
+        The four pulses are left alone, so the peak acceleration and velocity
+        -- and with them a_max, v_max and the anti-sway width t_p = n*t_sway --
+        are still the ones the move was sized with. Only the cruise grows.
+        """
+        move = self.move
+        self.move = Trajectory.from_shape(
+            move.component,
+            move.j,
+            move.tp,
+            move.lam + abs(distance) / abs(move.vp),
+            move.x0,
+            move.t0,
+        )
+
+    def delay(self, wait: float):
+        """Push the whole move `wait` later; `ti` runs from its own start."""
+        self.move.t0 += wait
+
+    @property
+    def time_left(self) -> float:
+        """What is left to run as the crane passes the waypoint (time_remi)."""
+        return self.move.duration - self.ti
+
+    @property
+    def braking(self) -> bool:
+        """Is the move already on its way down at the waypoint? (Flag_dec)"""
+        return self.ti > self.move.lam + 2.0 * self.move.tp
+
+
+class _Merger:
+    """The PLC's merging strategy, played out over a list of waypoints.
+
+    The PLC only ever sees three points at a time. Standing at p1 with p2 and
+    p3 ahead it asks whether the axis carrying the crane into p2 can run
+    straight through and on towards p3: two moves become one, and the
+    standstill in between disappears. Whatever it decides, the state at p2 is
+    handed on and the same question asked of (p2, p3, p4).
+
+    The axis carrying the joined move is the main axis (`i` in the MATLAB);
+    the other one (`j`) makes a plain standstill-to-standstill move in the
+    shadow of it. Merging is only allowed when there is room for that move and
+    for the main axis's own braking on top, which is what keeps the crane
+    passing exactly through every waypoint instead of cutting the corner.
+    """
+
+    def __init__(self, components, start, t0: float = 0.0):
+        self.components = tuple(components)
+        self.moves = ([], [])       # what each axis has been given to do
+        self.x = list(start)        # where each axis stands at the current point
+        self.t0 = float(t0)
+        self.t = float(t0)          # when the crane passes the current point
+        self.times = [float(t0)]    # ... for every point walked so far
+        self.ongoing = None         # the main-axis move still running, if any
+
+    def run(self, points) -> tuple:
+        """Walk the whole list, and hand back the two axes' chains."""
+        for p1, p2, p3 in zip(points, points[1:], points[2:]):
+            self._step(p1, p2, p3)
+            self.times.append(self.t)
+        # There is nothing to look ahead to on the last leg, so the crane
+        # stops -- which is where the main-axis move was headed anyway.
+        self._stop_at(points[-2], points[-1])
+        self.times.append(self.t)
+        return tuple(
+            # An axis that never had to move still owes the chain one move.
+            TrajectoryChain(moves or [component.trajectory(0.0, x, self.t0)])
+            for moves, component, x in zip(self.moves, self.components, self.x)
+        )
+
+    # -- handing work to an axis --------------------------------------------
+
+    def _move(self, axis: int, distance: float, t0: float) -> float:
+        """Give `axis` a standstill-to-standstill move; how long does it take?"""
+        move = self.components[axis].trajectory(distance, self.x[axis], t0)
+        if move.duration > 0.0:
+            self.moves[axis].append(move)
+        self.x[axis] = move.x_end
+        return move.duration
+
+    def _start(self, axis: int, target: float, t0: float) -> _Ongoing:
+        """Set the main axis off on a move running all the way to `target`."""
+        move = self.components[axis].trajectory(
+            target - self.x[axis], self.x[axis], t0
+        )
+        self.ongoing = _Ongoing(axis, move)
+        return self.ongoing
+
+    def _land(self) -> float:
+        """Let the main-axis move run out; how much of it was left?"""
+        run, self.ongoing = self.ongoing, None
+        self.moves[run.axis].append(run.move)
+        self.x[run.axis] = run.move.x_end
+        return run.time_left
+
+    # -- one look at three points -------------------------------------------
+
+    def _step(self, p1, p2, p3):
+        """Move from p1 to p2, with p3 in view."""
+        if self.ongoing is None:
+            self._from_standstill(p1, p2, p3)
+        else:
+            self._carry_on(p1, p2, p3)
+
+    def _from_standstill(self, p1, p2, p3):
+        """The crane is at rest on p1. Can it leave p2 without stopping?"""
+        main = _lone_axis(p1, p2)
+        if main is not None and _runs_through(main, p1, p2, p3):
+            # The leg into p2 needs one axis only, so that axis carries on
+            # through p2 towards p3 in a single move, with no acceleration or
+            # deceleration in between, and the other one waits at p1 until the
+            # crane reaches p2.
+            run = self._start(main, p3[main], self.t)
+            run.reach(p2[main])
+            self.t += run.ti
+            return
+
+        main = _lone_axis(p2, p3)
+        if main is not None and _runs_through(main, p1, p2, p3):
+            # The leg out of p2 needs one axis only, so that axis again takes
+            # both legs in one move -- held back long enough that it is still
+            # passing p2 as the other axis arrives there.
+            other = 1 - main
+            run = self._start(main, p3[main], self.t)
+            run.reach(p2[main])
+            leg = self._move(other, p2[other] - p1[other], self.t)
+            run.delay(max(0.0, leg - run.ti))
+            self.t += max(run.ti, leg)
+            return
+
+        # Neither leg is straight enough to join onto the next one.
+        self._stop_at(p1, p2)
+
+    def _carry_on(self, p1, p2, p3):
+        """The crane passes p1 mid-move. Can that move swallow p2 as well?"""
+        run = self.ongoing
+        main, other = run.axis, 1 - run.axis
+        step = p2[main] - p1[main]      # what the main axis does on this leg
+        ahead = p3[main] - p2[main]     # ... and what it does on the next one
+        leg = self.components[other].trajectory(p2[other] - p1[other]).duration
+
+        if (
+            not run.braking                          # not yet slowing down, and
+            and step * ahead > 0.0                   # not about to turn around,
+            and run.time_left - leg >= 2.0 * run.move.tp   # and time to spare
+        ):
+            # All three hold, so the move is stretched to reach p3 as well:
+            # the cruise takes over the distance the braking would have
+            # covered, and the other axis makes its leg while that happens.
+            self._move(other, p2[other] - p1[other], self.t)
+            was = run.ti
+            run.extend(ahead)
+            run.reach(p2[main])
+            self.t += run.ti - was
+            return
+
+        # Merging stops here: the main axis brakes to a standstill on p2,
+        # which is where its move was always going to end.
+        self._stop_at(p1, p2)
+
+    def _stop_at(self, p1, p2):
+        """Come to a standstill on p2: whatever is running finishes there."""
+        if self.ongoing is None:
+            legs = [self._move(axis, p2[axis] - p1[axis], self.t) for axis in (0, 1)]
+        else:
+            other = 1 - self.ongoing.axis
+            legs = [self._land(), self._move(other, p2[other] - p1[other], self.t)]
+        self.t += max(legs)
+
+
 # Axis limits from toy_example.m
 BRIDGE = Component(a_max=0.30, v_max=2, t_sway=4)
 TROLLEY = Component(a_max=0.25, v_max=1, t_sway=5)
 
 
 if __name__ == "__main__":
-    # A route given as (bridge, trolley) waypoints. The load comes to a full
-    # stop on each one: both axes set off together at the start of a leg and
-    # the faster of the two waits at the waypoint for the slower to arrive.
-    points = [(0, 12), (58, 14), (58, 6)]
-    move = Trajectory2D.through(points)
-    print(move)
-    print(f"total time: {move.duration} s")
-    move.plot()
+    # Routes given as (bridge, trolley) waypoints, driven both ways. `through`
+    # comes to a full stop on every point: both axes set off together at the
+    # start of a leg and the faster of the two waits at the waypoint for the
+    # slower to arrive. `through_merged` drives them the way the PLC does,
+    # running an axis straight through a waypoint where it can.
+    #
+    # The first route gains nothing: the trolley goes up to 14 and back down
+    # to 6, and an axis that turns around has to stop to do it. On the second
+    # the bridge never turns around, so it takes all three legs in one move.
+    for points in ([(0, 12), (58, 14), (58, 6)],
+                   [(0, 12), (40, 14), (55, 14), (58, 6)]):
+        move = Trajectory2D.through(points)
+        merged = Trajectory2D.through_merged(points)
+        print(points)
+        print(f"  stopping on every point: {move.duration:6.1f} s")
+        print(f"  merged:                  {merged.duration:6.1f} s")
+    merged.plot()
 
