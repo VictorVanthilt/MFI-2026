@@ -1,3 +1,6 @@
+from test_paths import plot_route
+from plc import Trajectory2D
+from plc import Component
 from test_paths import Point, Rect, Yard
 import matplotlib.pyplot as plt
 
@@ -98,8 +101,26 @@ yard_AM = Yard(
 # Already part of the yard geometry
 forbidden_zones_AM = []
 
+start_AM = Point(1624250, 780434) / 1000
+end_AM = Point(1863580, 779000) / 1000
+
+BRIDGE_AM = Component(a_max=190 / 1000, v_max=1960 / 1000, t_sway=5234 / 1000)
+TROLLEY_AM = Component(a_max=132 / 1000, v_max=790 / 1000, t_sway=5834 / 1000)
+
+# Path chosen by the algorithm at AM
+chosen_path = [
+    start_AM,
+    Point(1625404, 782596) / 1000,
+    Point(1753796, 782596) / 1000,
+    Point(1817229, 779000) / 1000,
+    end_AM,
+]
+
+
 if __name__ == "__main__":
-    ax = yard_screenshot.plot(forbidden_zones=forbidden_zones_screenshot)
-    plt.show()
-    ax = yard_AM.plot()
-    plt.show()
+    # ax = yard_screenshot.plot(forbidden_zones=forbidden_zones_screenshot)
+    # plt.show()
+    move = Trajectory2D.through_merged(
+        [(p.x, p.y) for p in chosen_path], BRIDGE_AM, TROLLEY_AM
+    )
+    plot_route(yard_AM, forbidden_zones_AM, move)
