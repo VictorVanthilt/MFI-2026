@@ -108,7 +108,7 @@ BRIDGE_AM = Component(a_max=190 / 1000, v_max=1960 / 1000, t_sway=5234 / 1000)
 TROLLEY_AM = Component(a_max=132 / 1000, v_max=790 / 1000, t_sway=5834 / 1000)
 
 # Path chosen by the algorithm at AM
-chosen_path = [
+chosen_path_AM = [
     start_AM,
     Point(1625404, 782596) / 1000,
     Point(1753796, 782596) / 1000,
@@ -117,10 +117,66 @@ chosen_path = [
 ]
 
 
+yard_LM = Yard(
+    [
+        Point(1488100, 793400) / 1000,
+        Point(1488100, 817700) / 1000,
+        Point(1580829, 817700) / 1000,
+        Point(1580829, 813229) / 1000,
+        Point(1628171, 813229) / 1000,
+        Point(1628171, 817700) / 1000,
+        Point(1672282, 817700) / 1000,
+        Point(1672282, 811556) / 1000,
+        Point(1694804, 811556) / 1000,
+        Point(1694804, 817700) / 1000,
+        Point(1906500, 817700) / 1000,
+        Point(1906500, 812501) / 1000,
+        Point(1776371, 812501) / 1000,
+        Point(1776371, 813171) / 1000,
+        Point(1727829, 813171) / 1000,
+        Point(1727829, 812501) / 1000,
+        Point(1711324, 812501) / 1000,
+        Point(1711324, 799371) / 1000,
+        Point(1662229, 799371) / 1000,
+        Point(1662229, 795028) / 1000,
+        Point(1660571, 795028) / 1000,
+        Point(1660571, 799371) / 1000,
+        Point(1615329, 799371) / 1000,
+        Point(1615329, 795028) / 1000,
+        Point(1615234, 795028) / 1000,
+        Point(1615234, 795093) / 1000,
+        Point(1596333, 795093) / 1000,
+        Point(1596333, 793400) / 1000,
+    ]
+)
+
+# Already part of the yard geometry
+forbidden_zones_LM = []
+
+start_LM = Point(1810399, 813012) / 1000
+end_LM = Point(1553800, 817400) / 1000
+
+BRIDGE_LM = Component(a_max=192 / 1000, v_max=1920 / 1000, t_sway=5625 / 1000)
+TROLLEY_LM = Component(a_max=162 / 1000, v_max=811 / 1000, t_sway=6049 / 1000)
+
+# Path chosen by the algorithm at AM for the LM yard
+chosen_path_LM = [
+    start_LM,
+    Point(1776871, 813671) / 1000,
+    Point(1710824, 813671) / 1000,
+    Point(1695304, 811056) / 1000,
+    Point(1580329, 811056) / 1000,
+    end_LM,
+]
+
 if __name__ == "__main__":
     # ax = yard_screenshot.plot(forbidden_zones=forbidden_zones_screenshot)
     # plt.show()
     move = Trajectory2D.through_merged(
-        [(p.x, p.y) for p in chosen_path], BRIDGE_AM, TROLLEY_AM
+        [(p.x, p.y) for p in chosen_path_AM], BRIDGE_AM, TROLLEY_AM
     )
     plot_route(yard_AM, forbidden_zones_AM, move)
+    move = Trajectory2D.through_merged(
+        [(p.x, p.y) for p in chosen_path_LM], BRIDGE_LM, TROLLEY_LM
+    )
+    plot_route(yard_LM, forbidden_zones_LM, move)
