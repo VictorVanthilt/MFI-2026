@@ -566,11 +566,15 @@ class Trajectory2D:
     Either side may be a `Trajectory` or a `TrajectoryChain`.
     """
 
-    def __init__(self, bridge, trolley):
+    def __init__(self, bridge, trolley, waypoints=None):
         if bridge.component is trolley.component:
             raise ValueError("bridge and trolley must run on different axes")
         self.bridge = bridge
         self.trolley = trolley
+        # The route this was asked to drive, if it was built from one. The
+        # PLC judges a move by the points it was given rather than by the
+        # curve it ends up driving, so the points are worth keeping.
+        self.waypoints = tuple(waypoints) if waypoints is not None else None
 
     @classmethod
     def through(cls, points, bridge=None, trolley=None, t0: float = 0.0):
@@ -599,7 +603,9 @@ class Trajectory2D:
             start += max(bridge_moves[-1].duration, trolley_moves[-1].duration)
             x, y = next_x, next_y
 
-        return cls(TrajectoryChain(bridge_moves), TrajectoryChain(trolley_moves))
+        return cls(
+            TrajectoryChain(bridge_moves), TrajectoryChain(trolley_moves), waypoints
+        )
 
     @classmethod
     def through_merged(cls, points, bridge=None, trolley=None, t0: float = 0.0):
@@ -631,7 +637,8 @@ class Trajectory2D:
         if len(waypoints) < 2:
             raise ValueError("need at least two points to move between")
 
-        return cls(*_Merger((bridge, trolley), waypoints[0], t0).run(waypoints))
+        chains = _Merger((bridge, trolley), waypoints[0], t0).run(waypoints)
+        return cls(*chains, waypoints=waypoints)
 
     def __repr__(self) -> str:
         return (
