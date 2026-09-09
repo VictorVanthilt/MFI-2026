@@ -290,6 +290,39 @@ def plot_route(yard, forbidden_zones, move, ax=None):
     span = max(high - low, 1e-9)
     ax.set_ylim(low - 0.07 * span, high + 0.3 * span)
 
+    # Say whether the route came out clear, and if it did not, of what. This
+    # is the curve the crane actually drives, which is a stricter question
+    # than the one `path_valid` asks of the waypoints it was given.
+    if trajectory_valid(yard, forbidden_zones, move):
+        note, alarm = "\u2713 valid path", None
+    elif trajectory_valid(yard, (), move):
+        note, alarm = "\u2717 enters a forbidden zone", "ENTERS A FORBIDDEN ZONE"
+        # The yard itself is clear, so any zone that fails on its own is one
+        # the crane actually drives into. Light those up.
+        for zone in forbidden_zones:
+            if not trajectory_valid(yard, [zone], move):
+                zone.plot(ax, facecolor=to_rgba(KEEP_OUT, 0.3), linewidth=2.0,
+                          zorder=6)
+    else:
+        note, alarm = "\u2717 leaves the yard", "LEAVES THE YARD"
+
+    ax.set_title(note, loc="right", fontsize=9.5, family="monospace", pad=10,
+                 color=INK if alarm is None else KEEP_OUT)
+
+    if alarm:
+        # A drawing that cannot be built gets stamped across the middle, and
+        # ruled off on all four sides. There is no reading the plan without
+        # seeing it.
+        ax.text(0.5, 0.42, alarm, transform=ax.transAxes, ha="center",
+                va="center", fontsize=26, fontweight="bold", family="monospace",
+                color=KEEP_OUT, zorder=10,
+                bbox={"facecolor": PAPER, "alpha": 0.8, "edgecolor": KEEP_OUT,
+                      "linewidth": 1.8, "boxstyle": "square,pad=0.55"})
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_color(KEEP_OUT)
+            spine.set_linewidth(1.8)
+
     # One legend row, in the band above the yard: `best` puts it on the yard.
     ax.legend(
         loc="upper center",
@@ -301,7 +334,9 @@ def plot_route(yard, forbidden_zones, move, ax=None):
         columnspacing=1.6,
     )
     if own_figure:
-        plt.tight_layout()
+        # A little more than the default all round: the note is right-aligned
+        # to the edge of the plan, and wants air outside it.
+        plt.tight_layout(pad=1.6)
         plt.show()
     return ax
 def path_valid(yard: Yard, forbidden_zones: list[Rect], path: list[Point]) -> bool:
@@ -528,8 +563,13 @@ if __name__ == "__main__":
     # The drawing runs. Handing it axes keeps it from opening a window, so
     # this stays a check rather than a distraction.
     _, scratch = plt.subplots()
-    drawn = Trajectory2D.through_merged([(p.x, p.y) for p in path2])
-    plot_route(yard, [forbidden1, forbidden2], drawn, ax=scratch)
+    for route in (path2, [a, b]):     # one that clears the zones, one that does not
+        plot_route(
+            yard,
+            [forbidden1, forbidden2],
+            Trajectory2D.through_merged([(p.x, p.y) for p in route]),
+            ax=scratch,
+        )
     notched.plot(ax=scratch)
     plt.close()
 
@@ -547,6 +587,6 @@ if __name__ == "__main__":
             ),
         ):
             plot_route(yard, [forbidden1, forbidden2], move, ax=ax)
-            ax.set_title(f"{name} -- {move.duration:.1f} s")
+            ax.set_title(name, fontsize=10, color=INK_SOFT)
         plt.tight_layout()
         plt.show()
