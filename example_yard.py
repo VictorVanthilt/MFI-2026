@@ -53,11 +53,17 @@ yard_screenshot = Yard(
         Point(402, 192),
         Point(402, 418),
         Point(390, 418),
-        Point(390, 191),
-        Point(108, 191),
+        Point(390, 192),
+        Point(108, 192),
         Point(108, 277),
     ]
 )
+
+forbidden_zones_screenshot = [
+    Rect(Point(400, 83), Point(490, 192)),
+    Rect(Point(990, 300), Point(1100, 342)),
+]
+
 
 # Actual yard data given to us (data is in mm)
 yard_AM = Yard(
@@ -88,5 +94,12 @@ yard_AM = Yard(
         Point(1607829, 758500) / 1000,
     ]
 )
-ax = yard_AM.plot()
-plt.show()
+
+# Already part of the yard geometry
+forbidden_zones_AM = []
+
+if __name__ == "__main__":
+    ax = yard_screenshot.plot(forbidden_zones=forbidden_zones_screenshot)
+    plt.show()
+    ax = yard_AM.plot()
+    plt.show()
