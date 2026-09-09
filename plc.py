@@ -12,6 +12,8 @@ import numpy as np
 import sympy as sp
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
+from matplotlib.colors import LinearSegmentedColormap
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # ---------------------------------------------------------------------------
 # Symbols
@@ -104,27 +106,58 @@ _EVAL = {
 }
 
 
+# ---------------------------------------------------------------------------
+# The look: a site plan, drawn in ink on paper
+# ---------------------------------------------------------------------------
+
+INK = "#1F2933"          # every line that carries a fact
+INK_SOFT = "#6B7684"     # labels, ticks, anything supporting
+PAPER = "#FFFFFF"
+RULE = "#E3E8ED"         # the grid the drawing sits on
+RULE_FINE = "#F1F4F7"
+
+# The clock, as one hue running light to dark. A ramp is a magnitude, and a
+# magnitude gets one hue -- several would read as categories.
+CLOCK = LinearSegmentedColormap.from_list(
+    "clock", ["#8FB8DC", "#2E6FA7", "#0E3A5F"]
+)
+
+
+def _beat(duration: float) -> float:
+    """A round number of seconds, giving a handful of marks along a path."""
+    for step in (5.0, 10.0, 15.0, 20.0, 30.0, 60.0):
+        if duration / step <= 12.0:
+            return step
+    return 120.0
+
+
 def _plot_profile(t, jerk, accel, vel, pos, boundaries=(), title=None):
     """Draw jerk/accel/vel/pos on four stacked axes.
 
     `boundaries` marks the times where one move hands over to the next.
     """
-    fig, ax = plt.subplots(4, 1, sharex=True, figsize=(8, 6))
+    fig, ax = plt.subplots(4, 1, sharex=True, figsize=(8, 6), facecolor=PAPER)
     if title:
-        fig.suptitle(title)
+        fig.suptitle(title, fontsize=11, color=INK, family="monospace", x=0.125,
+                     ha="left")
     for a, values, label, unit in zip(
         ax,
         (jerk, accel, vel, pos),
         ("jerk", "accel", "vel", "pos"),
         ("m/s³", "m/s²", "m/s", "m"),
     ):
-        a.plot(t, values, label=label)
-        a.set_ylabel(f"{label} ({unit})")
+        a.plot(t, values, color=CLOCK(0.55), linewidth=1.8, solid_capstyle="round")
+        a.set_ylabel(f"{label} ({unit})", fontsize=9, color=INK_SOFT)
         for boundary in boundaries:
-            a.axvline(boundary, color="grey", linestyle="--", linewidth=0.8)
-        a.grid()
-        a.legend()
-    ax[3].set_xlabel("time (s)")
+            a.axvline(boundary, color=INK_SOFT, linewidth=0.8, alpha=0.5)
+        a.grid(True, color=RULE, linewidth=0.6)
+        a.set_axisbelow(True)
+        a.set_facecolor(PAPER)
+        a.tick_params(labelsize=8, colors=INK_SOFT, length=2)
+        for side, spine in a.spines.items():
+            spine.set_visible(side in ("left", "bottom"))
+            spine.set_color(RULE)
+    ax[3].set_xlabel("time (s)", fontsize=9, color=INK_SOFT)
     plt.tight_layout()
     plt.show()
 
@@ -696,40 +729,71 @@ class Trajectory2D:
         )
 
     def plot(self, n_points: int = 600, ax=None):
-        """Plot the path traced through the yard, coloured by time.
+        """Draw the path traced through the yard, as a site plan.
 
-        Pass `ax` to draw onto existing axes (a yard outline, say); the axes
-        are returned either way.
+        Ink on paper: the route runs light to dark with the clock, a mark on
+        it every few seconds so its speed can be read off directly -- they
+        bunch up where the crane is slow -- and the standstills ringed. Pass
+        `ax` to draw onto existing axes (a yard outline, say); the axes come
+        back either way.
         """
         grid, x, y = self.sample(n_points)
 
         own_figure = ax is None
         if own_figure:
-            _, ax = plt.subplots(figsize=(8, 5))
+            _, ax = plt.subplots(figsize=(10, 4), facecolor=PAPER)
+            ax.set_facecolor(PAPER)
 
         # Colour the path by time -- in real space the clock is otherwise
         # invisible, and a corner where one axis waits for the other looks
         # like any other.
         points = np.stack([x, y], axis=1).reshape(-1, 1, 2)
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
-        path = LineCollection(segments, cmap="viridis", array=grid[:-1], linewidth=2)
+        path = LineCollection(
+            segments,
+            cmap=CLOCK,
+            array=grid[:-1],
+            linewidth=2.4,
+            capstyle="round",
+            zorder=4,
+        )
         ax.add_collection(path)
-        ax.figure.colorbar(path, ax=ax, label="time (s)")
+
+        # An axes appended under this one, so the scale is exactly as wide as
+        # the yard it belongs to rather than as wide as the figure.
+        cax = make_axes_locatable(ax).append_axes("bottom", size="7%", pad=0.42)
+        bar = ax.figure.colorbar(path, cax=cax, orientation="horizontal")
+        bar.set_label("time (s)", fontsize=8.5, color=INK_SOFT)
+        bar.outline.set_visible(False)
+        bar.ax.tick_params(labelsize=8, colors=INK_SOFT, length=2)
+
+        # One mark per `_beat` seconds: the crane covers less ground between
+        # two of them where it is slow, so the spacing is its speed.
+        beats = np.arange(self.t0, self.t_end - 1e-9, _beat(self.duration))[1:]
+        if len(beats):
+            ax.plot(*self.pos(beats), linestyle="none", marker="o", markersize=3,
+                    color=PAPER, markeredgecolor=INK, markeredgewidth=0.9,
+                    zorder=5, label=f"every {_beat(self.duration):.0f} s")
 
         stops = self.standstills
         if stops:
-            ax.plot(*self.pos(stops), "o", color="grey", markersize=5,
-                    label="standstill")
-        ax.plot(x[0], y[0], "o", color="tab:green", label="start")
-        ax.plot(x[-1], y[-1], "s", color="tab:red", label="end")
+            ax.plot(*self.pos(stops), linestyle="none", marker="o", markersize=9,
+                    color=PAPER, markeredgecolor=INK, markeredgewidth=1.6,
+                    zorder=6, label="standstill")
+        ax.plot(x[0], y[0], "o", color=INK, markersize=7, zorder=6, label="start")
+        ax.plot(x[-1], y[-1], "s", color=INK, markersize=7, zorder=6, label="end")
 
-        ax.set_title(self._title)
-        ax.set_xlabel("bridge (m)")
-        ax.set_ylabel("trolley (m)")
+        ax.set_title(self._title, loc="left", fontsize=11, color=INK,
+                     family="monospace", pad=10)
+        ax.set_xlabel("bridge (m)", fontsize=9, color=INK_SOFT)
+        ax.set_ylabel("trolley (m)", fontsize=9, color=INK_SOFT)
+        ax.tick_params(labelsize=8, colors=INK_SOFT, length=2)
         ax.set_aspect("equal")
         ax.autoscale_view()
-        ax.grid(True)      # `grid()` toggles, which drops a grid drawn under us
-        ax.legend()
+        ax.grid(True, color=RULE, linewidth=0.7)
+        ax.set_axisbelow(True)
+        ax.legend(loc="upper center", ncol=6, frameon=False, fontsize=8.5,
+                  labelcolor=INK_SOFT, handletextpad=0.4, columnspacing=1.6)
         if own_figure:
             plt.tight_layout()
             plt.show()

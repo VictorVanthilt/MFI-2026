@@ -6,10 +6,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import to_rgba
 from matplotlib.patches import Polygon, Rectangle
+from matplotlib.ticker import MaxNLocator, MultipleLocator
 
-from plc import BRIDGE, TROLLEY, Trajectory2D
+from plc import INK, INK_SOFT, PAPER, RULE, RULE_FINE, BRIDGE, TROLLEY, Trajectory2D
 
 EPSILON = 1e-9
+
+KEEP_OUT = "#A4262C"    # the one warm colour on the sheet: stay out
 
 class Point:
     def __init__(self, x: float, y: float):
@@ -102,24 +105,24 @@ class Rect:
         )
 
     def plot(self, ax=None, **style):
-        """Draw the rectangle as a filled patch on `ax`.
+        """Draw the rectangle as a patch on `ax`.
 
-        The default look is a zone to keep out of: a washed-out fill, so a
-        path crossing it still reads, with a firmer edge around it.
+        The default look is a zone to keep out of, marked the way a drawing
+        marks one: hatched at 45 degrees over a barely-tinted fill, so a path
+        crossing it still reads through the ruling.
         """
         if ax is None:
-            _, ax = plt.subplots(figsize=(8, 5))
+            _, ax = plt.subplots(figsize=(10, 4), facecolor=PAPER)
         ax.add_patch(
             Rectangle(
                 (self.bottom_left.x, self.bottom_left.y),
                 self.width(),
                 self.height(),
                 **{
-                    # A washed fill with a firm edge -- one `alpha` for the
-                    # whole patch would take the outline with it.
-                    "facecolor": to_rgba("tab:red", 0.18),
-                    "edgecolor": to_rgba("tab:red", 0.75),
-                    "linewidth": 1.2,
+                    "facecolor": to_rgba(KEEP_OUT, 0.06),
+                    "edgecolor": KEEP_OUT,
+                    "hatch": "////",
+                    "linewidth": 1.0,
                     **style,
                 },
             )
@@ -206,8 +209,9 @@ class Yard:
     def plot(self, forbidden_zones=(), ax=None):
         """Draw the yard, and the zones inside it that have to stay clear.
 
-        Both are context rather than data, so they stay quiet: the yard is an
-        outline and the zones are washed out enough to read a path through.
+        The sheet the route is drawn on: graph paper, the yard walls inked
+        over it, and the zones hatched out. Both are context rather than
+        data, so nothing here competes with the path that goes on top.
 
         Pass `ax` to draw onto existing axes; a figure shaped like the yard is
         made otherwise. The axes come back either way, ready for a
@@ -221,31 +225,50 @@ class Yard:
             # drawn to scale, so a square figure would be mostly empty.
             span = max(max(xs) - min(xs), 1e-9)
             height = 10.0 * (max(ys) - min(ys)) / span
-            _, ax = plt.subplots(figsize=(10.0, min(max(height + 2.0, 3.0), 9.0)))
+            _, ax = plt.subplots(
+                figsize=(10.0, min(max(height + 2.4, 3.4), 9.0)), facecolor=PAPER
+            )
+        ax.figure.set_facecolor(PAPER)
+        ax.set_facecolor(PAPER)
 
         ax.add_patch(
             Polygon(
                 [(p.x, p.y) for p in self.points],
                 closed=True,
                 facecolor="none",
-                edgecolor="0.35",
-                linewidth=1.5,
+                edgecolor=INK,
+                linewidth=1.8,
+                joinstyle="miter",
                 label="yard",
-                zorder=0,
+                zorder=2,
             )
         )
         for i, zone in enumerate(forbidden_zones):
             # One legend entry between them, not one apiece.
-            zone.plot(ax, label="forbidden" if i == 0 else None, zorder=1)
+            zone.plot(ax, label="forbidden" if i == 0 else None, zorder=3)
 
-        ax.set_xlabel("bridge (m)")
-        ax.set_ylabel("trolley (m)")
+        # Graph paper: a metre rule under a ten-metre one.
+        ax.xaxis.set_minor_locator(MultipleLocator(2))
+        ax.yaxis.set_minor_locator(MultipleLocator(2))
+        # Whole metres up the side; the default lands on halves.
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=6, integer=True))
+        ax.grid(True, which="minor", color=RULE_FINE, linewidth=0.5)
+        ax.grid(True, which="major", color=RULE, linewidth=0.7)
+        ax.set_axisbelow(True)     # the paper reads through the yard, not over it
+
+        ax.set_xlabel("bridge (m)", fontsize=9, color=INK_SOFT)
+        ax.set_ylabel("trolley (m)", fontsize=9, color=INK_SOFT)
+        ax.tick_params(labelsize=8, colors=INK_SOFT, length=2)
+        ax.tick_params(which="minor", length=0)
+        # Two rules, not four: the yard walls are the frame here.
+        for side, spine in ax.spines.items():
+            spine.set_visible(side in ("left", "bottom"))
+            spine.set_color(RULE)
+            spine.set_linewidth(0.8)
         ax.set_aspect("equal")
         ax.autoscale_view()
         # A band above the yard for the legend, and a little air below it.
         ax.margins(0.03, 0.22)
-        ax.grid(True, color="0.88")
-        ax.set_axisbelow(True)     # the grid reads through the yard, not over it
         return ax
 
 
@@ -259,19 +282,28 @@ def plot_route(yard, forbidden_zones, move, ax=None):
     own_figure = ax is None
     ax = yard.plot(forbidden_zones, ax=ax)
     move.plot(ax=ax)
+
+    # A band above everything drawn for the legend to sit in, and a thin one
+    # below. `margins` would give the same to both, and the one under the
+    # yard is dead space.
+    low, high = ax.dataLim.intervaly
+    span = max(high - low, 1e-9)
+    ax.set_ylim(low - 0.07 * span, high + 0.3 * span)
+
     # One legend row, in the band above the yard: `best` puts it on the yard.
     ax.legend(
         loc="upper center",
         ncol=len(ax.get_legend_handles_labels()[0]),
         frameon=False,
-        fontsize="small",
+        fontsize=8.5,
+        labelcolor=INK_SOFT,
+        handletextpad=0.4,
+        columnspacing=1.6,
     )
     if own_figure:
         plt.tight_layout()
         plt.show()
     return ax
-
-
 def path_valid(yard: Yard, forbidden_zones: list[Rect], path: list[Point]) -> bool:
     for i in range(len(path) - 1):
         bounding_box = Rect.bounding_box(path[i], path[i + 1])
