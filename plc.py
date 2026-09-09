@@ -566,7 +566,7 @@ class Trajectory2D:
     Either side may be a `Trajectory` or a `TrajectoryChain`.
     """
 
-    def __init__(self, bridge, trolley, waypoints=None):
+    def __init__(self, bridge, trolley, waypoints=None, times=None):
         if bridge.component is trolley.component:
             raise ValueError("bridge and trolley must run on different axes")
         self.bridge = bridge
@@ -575,6 +575,10 @@ class Trajectory2D:
         # PLC judges a move by the points it was given rather than by the
         # curve it ends up driving, so the points are worth keeping.
         self.waypoints = tuple(waypoints) if waypoints is not None else None
+        # When the load passes each of them. The curve alone cannot say which
+        # waypoints were merged -- a corner run straight through looks like
+        # any other bend -- but the clock can.
+        self.times = tuple(times) if times is not None else None
 
     @classmethod
     def through(cls, points, bridge=None, trolley=None, t0: float = 0.0):
@@ -597,14 +601,19 @@ class Trajectory2D:
 
         bridge_moves, trolley_moves = [], []
         (x, y), start = waypoints[0], float(t0)
+        times = [start]
         for next_x, next_y in waypoints[1:]:
             bridge_moves.append(bridge.trajectory(next_x - x, x, start))
             trolley_moves.append(trolley.trajectory(next_y - y, y, start))
             start += max(bridge_moves[-1].duration, trolley_moves[-1].duration)
+            times.append(start)
             x, y = next_x, next_y
 
         return cls(
-            TrajectoryChain(bridge_moves), TrajectoryChain(trolley_moves), waypoints
+            TrajectoryChain(bridge_moves),
+            TrajectoryChain(trolley_moves),
+            waypoints,
+            times,
         )
 
     @classmethod
@@ -642,8 +651,9 @@ class Trajectory2D:
         if len(waypoints) < 2:
             raise ValueError("need at least two points to move between")
 
-        chains = _Merger((bridge, trolley), waypoints[0], t0).run(waypoints)
-        return cls(*chains, waypoints=waypoints)
+        merger = _Merger((bridge, trolley), waypoints[0], t0)
+        chains = merger.run(waypoints)
+        return cls(*chains, waypoints=waypoints, times=merger.times)
 
     def __repr__(self) -> str:
         return (
@@ -718,6 +728,26 @@ class Trajectory2D:
             busy_until = end
         return stops
 
+    @property
+    def merged(self) -> tuple:
+        """One flag per waypoint: did the crane run straight through it?
+
+        A waypoint is merged when the load never comes to rest on it -- the
+        standstill `through` would have spent there has been merged away. So
+        this is `standstills` read against the route rather than the clock,
+        and on a `through` move nothing is merged at all.
+
+        The two ends are never merged: the load is at rest at both whatever
+        it does in between.
+        """
+        if self.waypoints is None or self.times is None:
+            raise ValueError("this move was not built from a route")
+        stops, last = self.standstills, len(self.times) - 1
+        return tuple(
+            not (i in (0, last) or any(abs(when - stop) < 1e-6 for stop in stops))
+            for i, when in enumerate(self.times)
+        )
+
     def pos(self, time) -> tuple:
         """Position at absolute time(s) `time`, as (bridge, trolley)."""
         return (self.bridge.pos(time), self.trolley.pos(time))
@@ -745,9 +775,10 @@ class Trajectory2D:
 
         Ink on paper: the route runs light to dark with the clock, a mark on
         it every few seconds so its speed can be read off directly -- they
-        bunch up where the crane is slow -- and the standstills ringed. Pass
-        `ax` to draw onto existing axes (a yard outline, say); the axes come
-        back either way.
+        bunch up where the crane is slow -- and every waypoint marked, hollow
+        where merging carried the load straight through and filled where it
+        came to a stop. Pass `ax` to draw onto existing axes (a yard outline,
+        say); the axes come back either way.
         """
         grid, x, y = self.sample(n_points)
 
@@ -787,13 +818,35 @@ class Trajectory2D:
                     color=PAPER, markeredgecolor=INK, markeredgewidth=0.9,
                     zorder=5, label=f"every {_beat(self.duration):.0f} s")
 
-        stops = self.standstills
-        if stops:
-            ax.plot(*self.pos(stops), linestyle="none", marker="o", markersize=9,
-                    color=PAPER, markeredgecolor=INK, markeredgewidth=1.6,
-                    zorder=6, label="standstill")
-        ax.plot(x[0], y[0], "o", color=INK, markersize=7, zorder=6, label="start")
-        ax.plot(x[-1], y[-1], "s", color=INK, markersize=7, zorder=6, label="end")
+        # Every waypoint the route was given, told apart by whether the load
+        # had to stop on it. A merged one is run straight through, so it is
+        # left hollow; one the load comes to rest on is filled in.
+        if self.waypoints is not None and self.times is not None:
+            merged = self.merged
+            groups = (
+                ([p for p, m in zip(self.waypoints, merged) if m], PAPER, "merged"),
+                ([p for p, m in zip(self.waypoints, merged) if not m], INK, "stop"),
+            )
+            for marks, face, label in groups:
+                if marks:
+                    ax.plot(*zip(*marks), linestyle="none", marker="o",
+                            markersize=9, color=face, markeredgecolor=INK,
+                            markeredgewidth=1.6, zorder=6, label=label)
+        else:
+            # Built by hand rather than from a route, so there are no
+            # waypoints to judge; ring the standstills on their own.
+            stops = self.standstills
+            if stops:
+                ax.plot(*self.pos(stops), linestyle="none", marker="o",
+                        markersize=9, color=PAPER, markeredgecolor=INK,
+                        markeredgewidth=1.6, zorder=6, label="standstill")
+        # Both ends are stops too, so they carry a waypoint mark already; the
+        # light rim is what lifts these clear of it.
+        for (px, py), marker, label in (((x[0], y[0]), "o", "start"),
+                                        ((x[-1], y[-1]), "s", "end")):
+            ax.plot(px, py, marker, color=INK, markersize=8,
+                    markeredgecolor=PAPER, markeredgewidth=1.4, zorder=7,
+                    label=label)
 
         ax.set_title(self._title, loc="left", fontsize=11, color=INK,
                      family="monospace", pad=10)

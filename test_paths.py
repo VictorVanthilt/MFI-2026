@@ -189,8 +189,52 @@ class Yard:
                     inside = not inside
         return inside
 
+    # Does the closed segment a-b stay inside the yard?
+    def contains_segment(self, a: Point, b: Point) -> bool:
+        # Whether the segment is in or out can only change where it meets an
+        # edge, so cut it at every such point and test the middle of each
+        # piece. Both ends being inside is not enough on its own: a segment
+        # can leave through a notch and come back, touching the walls only at
+        # the two points where it does.
+        span = b - a
+        length = span.x**2 + span.y**2
+        if length < EPSILON:
+            return self.contains_point(a)
+
+        cuts = {0.0, 1.0}
+        for i in range(len(self.points)):
+            p, q = self.points[i - 1], self.points[i]
+            edge = q - p
+            offset = p - a
+            denominator = span.x * edge.y - span.y * edge.x
+            if abs(denominator) < EPSILON:
+                # Parallel. Only an edge lying along the segment can cut it,
+                # and then it is the ends of the overlap that do.
+                if abs(offset.x * span.y - offset.y * span.x) < EPSILON:
+                    for corner in (p, q):
+                        reach = corner - a
+                        cuts.add((reach.x * span.x + reach.y * span.y) / length)
+                continue
+            t = (offset.x * edge.y - offset.y * edge.x) / denominator
+            u = (offset.x * span.y - offset.y * span.x) / denominator
+            if 0.0 <= u <= 1.0:
+                cuts.add(t)
+
+        ordered = sorted(x for x in cuts if 0.0 <= x <= 1.0)
+        return all(
+            self.contains_point(a + span * (0.5 * (s + t)))
+            for s, t in zip(ordered, ordered[1:])
+        )
+
     # Check if the rectangle is contained inside the yard
     def contains(self, rect: Rect) -> bool:
+        # A rectangle with no width or height is really a segment, and the
+        # tests below cannot see one leave the yard through a notch and come
+        # back: its corners are its two ends, no edge crosses it, and it
+        # strictly contains nothing. Walk it instead.
+        if rect.width() <= EPSILON or rect.height() <= EPSILON:
+            return self.contains_segment(rect.bottom_left, rect.top_right)
+
         # The rectangle is convex and the yard is a simple polygon, so the
         # rectangle is contained exactly when all four of its corners are in
         # the yard, no yard edge cuts across it, and no yard corner pokes into
