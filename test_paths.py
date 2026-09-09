@@ -1,12 +1,15 @@
 import math
+import sys
 from typing import Self
 
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import to_rgba
+from matplotlib.patches import Polygon, Rectangle
 
 from plc import BRIDGE, TROLLEY, Trajectory2D
 
 EPSILON = 1e-9
-
 
 class Point:
     def __init__(self, x: float, y: float):
@@ -98,6 +101,31 @@ class Rect:
             )
         )
 
+    def plot(self, ax=None, **style):
+        """Draw the rectangle as a filled patch on `ax`.
+
+        The default look is a zone to keep out of: a washed-out fill, so a
+        path crossing it still reads, with a firmer edge around it.
+        """
+        if ax is None:
+            _, ax = plt.subplots(figsize=(8, 5))
+        ax.add_patch(
+            Rectangle(
+                (self.bottom_left.x, self.bottom_left.y),
+                self.width(),
+                self.height(),
+                **{
+                    # A washed fill with a firm edge -- one `alpha` for the
+                    # whole patch would take the outline with it.
+                    "facecolor": to_rgba("tab:red", 0.18),
+                    "edgecolor": to_rgba("tab:red", 0.75),
+                    "linewidth": 1.2,
+                    **style,
+                },
+            )
+        )
+        return ax
+
 
 # Colinear segments are not treated as intersecting
 def seg_seg_intersect(a1: Point, a2: Point, b1: Point, b2: Point) -> bool:
@@ -174,6 +202,74 @@ class Yard:
             if rect.intersects_segment(self.points[i - 1], self.points[i]):
                 return False
         return True
+
+    def plot(self, forbidden_zones=(), ax=None):
+        """Draw the yard, and the zones inside it that have to stay clear.
+
+        Both are context rather than data, so they stay quiet: the yard is an
+        outline and the zones are washed out enough to read a path through.
+
+        Pass `ax` to draw onto existing axes; a figure shaped like the yard is
+        made otherwise. The axes come back either way, ready for a
+        `Trajectory2D.plot(ax=ax)` on top.
+        """
+        xs = [p.x for p in self.points]
+        ys = [p.y for p in self.points]
+
+        if ax is None:
+            # A yard is usually much wider than it is deep, and the axes are
+            # drawn to scale, so a square figure would be mostly empty.
+            span = max(max(xs) - min(xs), 1e-9)
+            height = 10.0 * (max(ys) - min(ys)) / span
+            _, ax = plt.subplots(figsize=(10.0, min(max(height + 2.0, 3.0), 9.0)))
+
+        ax.add_patch(
+            Polygon(
+                [(p.x, p.y) for p in self.points],
+                closed=True,
+                facecolor="none",
+                edgecolor="0.35",
+                linewidth=1.5,
+                label="yard",
+                zorder=0,
+            )
+        )
+        for i, zone in enumerate(forbidden_zones):
+            # One legend entry between them, not one apiece.
+            zone.plot(ax, label="forbidden" if i == 0 else None, zorder=1)
+
+        ax.set_xlabel("bridge (m)")
+        ax.set_ylabel("trolley (m)")
+        ax.set_aspect("equal")
+        ax.autoscale_view()
+        # A band above the yard for the legend, and a little air below it.
+        ax.margins(0.03, 0.22)
+        ax.grid(True, color="0.88")
+        ax.set_axisbelow(True)     # the grid reads through the yard, not over it
+        return ax
+
+
+def plot_route(yard, forbidden_zones, move, ax=None):
+    """Draw a crane move inside the yard it has to keep to.
+
+    The yard and the zones it must stay out of go down first, then the path
+    the crane traces through them. Pass `ax` to draw onto existing axes; a new
+    figure is made and shown otherwise.
+    """
+    own_figure = ax is None
+    ax = yard.plot(forbidden_zones, ax=ax)
+    move.plot(ax=ax)
+    # One legend row, in the band above the yard: `best` puts it on the yard.
+    ax.legend(
+        loc="upper center",
+        ncol=len(ax.get_legend_handles_labels()[0]),
+        frameon=False,
+        fontsize="small",
+    )
+    if own_figure:
+        plt.tight_layout()
+        plt.show()
+    return ax
 
 
 def path_valid(yard: Yard, forbidden_zones: list[Rect], path: list[Point]) -> bool:
@@ -396,3 +492,29 @@ if __name__ == "__main__":
             f"trajectory through {path} should be "
             f"{'valid' if expected else 'invalid'} in the notched yard"
         )
+
+    # The drawing runs. Handing it axes keeps it from opening a window, so
+    # this stays a check rather than a distraction.
+    _, scratch = plt.subplots()
+    drawn = Trajectory2D.through_merged([(p.x, p.y) for p in path2])
+    plot_route(yard, [forbidden1, forbidden2], drawn, ax=scratch)
+    notched.plot(ax=scratch)
+    plt.close()
+
+    # `python test_paths.py --plot` draws the test problem instead of only
+    # asserting things about it: the yard, the two zones to keep out of, and
+    # the route through them driven both ways.
+    if "--plot" in sys.argv:
+        route = [(p.x, p.y) for p in path1]
+        _, axes = plt.subplots(2, 1, figsize=(10, 7))
+        for ax, (name, move) in zip(
+            axes,
+            (
+                ("stopping on every point", Trajectory2D.through(route)),
+                ("merged", Trajectory2D.through_merged(route)),
+            ),
+        ):
+            plot_route(yard, [forbidden1, forbidden2], move, ax=ax)
+            ax.set_title(f"{name} -- {move.duration:.1f} s")
+        plt.tight_layout()
+        plt.show()

@@ -104,12 +104,14 @@ _EVAL = {
 }
 
 
-def _plot_profile(t, jerk, accel, vel, pos, boundaries=()):
+def _plot_profile(t, jerk, accel, vel, pos, boundaries=(), title=None):
     """Draw jerk/accel/vel/pos on four stacked axes.
 
     `boundaries` marks the times where one move hands over to the next.
     """
     fig, ax = plt.subplots(4, 1, sharex=True, figsize=(8, 6))
+    if title:
+        fig.suptitle(title)
     for a, values, label, unit in zip(
         ax,
         (jerk, accel, vel, pos),
@@ -352,6 +354,11 @@ class Trajectory:
         covered = (position - self.x0) * (1.0 if self.distance >= 0.0 else -1.0)
         return self.t0 + _time_covered(abs(self.j), self.tp, self.lam, covered)
 
+    @property
+    def _title(self) -> str:
+        """What every plot of this move is captioned with."""
+        return f"total time: {self.duration:.1f} s"
+
     def sample(self, n_points: int = 600):
         """Evaluate the trajectory on a time grid, for plotting.
 
@@ -362,7 +369,7 @@ class Trajectory:
         return grid, self.jerk(grid), self.accel(grid), self.vel(grid), self.pos(grid)
 
     def plot(self, n_points: int = 600):
-        _plot_profile(*self.sample(n_points))
+        _plot_profile(*self.sample(n_points), title=self._title)
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +490,11 @@ class TrajectoryChain:
         """Position at absolute time(s) `time`."""
         return self._eval("pos", time)
 
+    @property
+    def _title(self) -> str:
+        """What every plot of this move is captioned with."""
+        return f"total time: {self.duration:.1f} s"
+
     def sample(self, n_points: int = 600):
         """Evaluate the whole chain on a time grid, for plotting.
 
@@ -496,6 +508,7 @@ class TrajectoryChain:
         _plot_profile(
             *self.sample(n_points),
             boundaries=[tr.t_end for tr in self.trajectories[:-1]],
+            title=self._title,
         )
 
 
@@ -664,6 +677,11 @@ class Trajectory2D:
         """Position at absolute time(s) `time`, as (bridge, trolley)."""
         return (self.bridge.pos(time), self.trolley.pos(time))
 
+    @property
+    def _title(self) -> str:
+        """What every plot of this move is captioned with."""
+        return f"total time: {self.duration:.1f} s"
+
     def sample(self, n_points: int = 600):
         """Evaluate both axes on a common time grid, for plotting.
 
@@ -705,11 +723,12 @@ class Trajectory2D:
         ax.plot(x[0], y[0], "o", color="tab:green", label="start")
         ax.plot(x[-1], y[-1], "s", color="tab:red", label="end")
 
+        ax.set_title(self._title)
         ax.set_xlabel("bridge (m)")
         ax.set_ylabel("trolley (m)")
         ax.set_aspect("equal")
         ax.autoscale_view()
-        ax.grid()
+        ax.grid(True)      # `grid()` toggles, which drops a grid drawn under us
         ax.legend()
         if own_figure:
             plt.tight_layout()
