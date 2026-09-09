@@ -1,3 +1,4 @@
+import math
 from typing import Self
 
 import numpy as np
@@ -44,6 +45,22 @@ class Rect:
             self.bottom_left.x <= point.x <= self.top_right.x
             and self.bottom_left.y <= point.y <= self.top_right.y
         )
+
+    # Inside the rectangle and off its border, so a degenerate rectangle -- a
+    # move along one axis only -- strictly contains nothing.
+    def strictly_contains_point(self, point: Point) -> bool:
+        return (
+            self.bottom_left.x + EPSILON < point.x < self.top_right.x - EPSILON
+            and self.bottom_left.y + EPSILON < point.y < self.top_right.y - EPSILON
+        )
+
+    def corners(self) -> list[Point]:
+        return [
+            self.bottom_left,
+            Point(self.top_right.x, self.bottom_left.y),
+            self.top_right,
+            Point(self.bottom_left.x, self.top_right.y),
+        ]
 
     def center(self) -> Point:
         return (self.top_right + self.bottom_left) / 2
@@ -100,40 +117,63 @@ def seg_seg_intersect(a1: Point, a2: Point, b1: Point, b2: Point) -> bool:
     return True
 
 
-# Ray cast from a point to decide whether it is inside the yard. The slope is
-# deliberately irrational: a 45-degree ray leaves any lattice point exactly
-# through a lattice corner of the yard, and seg_seg_intersect drops both edges
-# meeting there, so the crossings come out even and an interior point reads as
-# outside.
-RAY = Point(1e9, 1e9 * 0.7071067811865476 * 1.2345678901234567)
+# Is `p` on the closed segment a-b?
+def point_on_segment(p: Point, a: Point, b: Point) -> bool:
+    ab = b - a
+    ap = p - a
+    length = math.hypot(ab.x, ab.y)
+    if length < EPSILON:
+        return math.hypot(ap.x, ap.y) <= EPSILON
+    # Distance from the infinite line through a and b, then how far along it.
+    if abs(ab.x * ap.y - ab.y * ap.x) / length > EPSILON:
+        return False
+    along = (ap.x * ab.x + ap.y * ab.y) / length
+    return -EPSILON <= along <= length + EPSILON
 
 
 class Yard:
     def __init__(self, points: list[Point]):
         self.points = points
 
-    # Check if the rectangle is contained inside the yard
-    def contains(self, rect: Rect) -> bool:
-        num_collisions = 0
+    # Check if the point is inside the yard, or on its boundary
+    def contains_point(self, point: Point) -> bool:
         for i in range(len(self.points)):
             # Abuse python negative indexing
-            if rect.intersects_segment(self.points[i - 1], self.points[i]):
-                # print(
-                #     f"Rect({rect.bottom_left} {rect.top_right}) {self.points[i - 1]} {self.points[i]}"
-                # )
+            if point_on_segment(point, self.points[i - 1], self.points[i]):
+                return True
+
+        # Crossing number along the ray running left from the point. An edge
+        # counts only if it spans the point's height with the lower end
+        # included and the upper end excluded, so an edge that merely touches
+        # that height is not counted and one passing through it is counted
+        # exactly once -- vertices and horizontal edges included. Unlike a
+        # ray at a fixed angle there is no direction left to be unlucky with.
+        inside = False
+        for i in range(len(self.points)):
+            a, b = self.points[i - 1], self.points[i]
+            if (a.y > point.y) != (b.y > point.y):
+                # The half-open test above guarantees a.y != b.y here.
+                x_hit = a.x + (point.y - a.y) * (b.x - a.x) / (b.y - a.y)
+                if point.x < x_hit:
+                    inside = not inside
+        return inside
+
+    # Check if the rectangle is contained inside the yard
+    def contains(self, rect: Rect) -> bool:
+        # The rectangle is convex and the yard is a simple polygon, so the
+        # rectangle is contained exactly when all four of its corners are in
+        # the yard, no yard edge cuts across it, and no yard corner pokes into
+        # it. The last two are what a notch in the boundary trips -- a notch
+        # can reach into the rectangle while leaving every corner inside.
+        # Touching counts as contained: a path may run along a wall.
+        if not all(self.contains_point(corner) for corner in rect.corners()):
+            return False
+        for i in range(len(self.points)):
+            if rect.strictly_contains_point(self.points[i - 1]):
                 return False
-            if seg_seg_intersect(
-                rect.center(),
-                rect.center() + RAY,
-                self.points[i - 1],
-                self.points[i],
-            ):
-                num_collisions += 1
-        # At this point none of the rectangle edges intersect any of the yard boundaries
-        # To check if we are inside it is enough to know if the center of the rectangle is inside
-        # This is true if the number of intersection with an arbitrary ray starting at the center
-        # with the yard boundaries is odd.
-        return num_collisions % 2 == 1
+            if rect.intersects_segment(self.points[i - 1], self.points[i]):
+                return False
+        return True
 
 
 def path_valid(yard: Yard, forbidden_zones: list[Rect], path: list[Point]) -> bool:
@@ -152,15 +192,38 @@ def path_valid(yard: Yard, forbidden_zones: list[Rect], path: list[Point]) -> bo
     return True
 
 
+def leg_boundaries(move: Trajectory2D) -> list[float]:
+    """Every time at which either axis starts or finishes one of its moves.
+
+    Within one move an axis never reverses: its velocity runs 0 -> peak -> 0
+    without changing sign, so the position is monotonic. Between two of these
+    times both axes are therefore monotonic, which means the curve they trace
+    stays inside the bounding box of its two endpoints.
+    """
+    times = {move.t0, move.t_end}
+    for side in (move.bridge, move.trolley):
+        # A TrajectoryChain carries its moves; a bare Trajectory is one move.
+        for leg in getattr(side, "trajectories", (side,)):
+            times.update((leg.t0, leg.t_end))
+    return sorted(x for x in times if move.t0 <= x <= move.t_end)
+
+
 def trajectory_points(move: Trajectory2D, n_points: int = 2000) -> list[Point]:
     """Sample a Trajectory2D into the polyline that `path_valid` expects.
 
-    The handover times -- where one leg gives way to the next -- are always
-    sampled, so the corners of the path land exactly on the polyline instead
-    of being cut by the grid. The rest of the samples are uniform in time.
+    Every leg boundary is sampled, so no step ever straddles one and each step
+    spans a stretch where both axes are monotonic. The bounding box of a step
+    is then a true envelope of the curve inside it, whatever `n_points` is.
+    The uniform samples in between only shrink those boxes.
+
+    This is the path as a list of points -- for drawing it, or for feeding to
+    anything that wants waypoints. `trajectory_valid` does not go through it:
+    it splits the awkward stretches instead of sampling everything evenly.
     """
-    grid = np.linspace(move.t0, move.t_end, n_points)
-    grid = np.union1d(grid, move.handovers)
+    grid = np.union1d(
+        np.linspace(move.t0, move.t_end, max(n_points, 2)),
+        leg_boundaries(move),
+    )
     if grid.size < 2:
         # A move that takes no time collapses to a single instant, and a
         # one-point path would pass every check by having no steps at all.
@@ -169,24 +232,65 @@ def trajectory_points(move: Trajectory2D, n_points: int = 2000) -> list[Point]:
     return [Point(float(px), float(py)) for px, py in zip(x, y)]
 
 
+def _stretch_valid(
+    yard: Yard,
+    forbidden_zones: list[Rect],
+    move: Trajectory2D,
+    t0: float,
+    t1: float,
+    depth: int,
+) -> bool:
+    """Is the curve between times t0 and t1 clear? Split it if unsure."""
+    x, y = move.pos([t0, t1])
+    ends = [Point(float(x[0]), float(y[0])), Point(float(x[1]), float(y[1]))]
+
+    # `path_valid` on the two ends checks their bounding box, which -- as long
+    # as t0 and t1 sit within one leg -- is a box the curve cannot leave. So a
+    # pass here settles the whole stretch.
+    if path_valid(yard, forbidden_zones, ends):
+        return True
+
+    # A failure does not settle anything: the box is bigger than the curve, so
+    # what it hit may be somewhere the curve never goes. Halve it and ask
+    # again about the two tighter boxes.
+    mid = 0.5 * (t0 + t1)
+    if depth <= 0 or not t0 < mid < t1:
+        # Out of depth, or the stretch is too short to halve any further.
+        return False
+    return _stretch_valid(
+        yard, forbidden_zones, move, t0, mid, depth - 1
+    ) and _stretch_valid(yard, forbidden_zones, move, mid, t1, depth - 1)
+
+
 def trajectory_valid(
     yard: Yard,
     forbidden_zones: list[Rect],
     move: Trajectory2D,
-    n_points: int = 2000,
+    max_depth: int = 14,
 ) -> bool:
     """Check the path a Trajectory2D actually traces against the yard.
 
     `path_valid` judges a leg by the bounding box of its endpoints, which is
     the right call for a waypoint list: the two axes run independently, so
     anywhere in that box is reachable. Here the timing is already fixed, so
-    the box of each *sampled step* is a much tighter -- and still
-    conservative -- envelope around the real curve.
+    the curve is one particular line through that box and most of the box is
+    somewhere it never goes.
 
-    Raise `n_points` if the path skims a boundary: between two samples the
-    envelope is only as good as the grid is fine.
+    So the check starts from one box per leg and splits any box that fails in
+    half, down to `max_depth` levels. Splitting only ever tightens the
+    envelope around the curve, and a stretch that still looks blocked at full
+    depth is reported blocked -- erring, as the box does, on the safe side.
+    Only the boxes that straddle a boundary get split, so a path well clear of
+    everything costs one check per leg.
     """
-    return path_valid(yard, forbidden_zones, trajectory_points(move, n_points))
+    bounds = leg_boundaries(move)
+    if len(bounds) < 2:
+        # A move that takes no time is a single instant; check that spot.
+        bounds = bounds * 2
+    return all(
+        _stretch_valid(yard, forbidden_zones, move, t0, t1, max_depth)
+        for t0, t1 in zip(bounds, bounds[1:])
+    )
 
 
 def naive_total_time(path: list[Point]) -> float:
@@ -263,3 +367,32 @@ if __name__ == "__main__":
             f"{'valid' if expected else 'invalid'}"
         )
         print(f"Trajectory through {path}: {move.duration:.1f} s")
+
+    # A yard with a slot cut into it, to exercise the non-convex case.
+    notched = Yard(
+        [
+            Point(0, 0),
+            Point(60, 0),
+            Point(60, 16),
+            Point(35, 16),
+            Point(35, 6),
+            Point(20, 6),
+            Point(20, 16),
+            Point(0, 16),
+        ]
+    )
+    assert notched.contains_point(Point(27, 3)), "below the slot is inside"
+    assert not notched.contains_point(Point(27, 12)), "the slot is outside"
+    assert notched.contains_point(Point(20, 12)), "the slot wall is inside"
+    assert notched.contains(Rect(Point(10, 1), Point(50, 5))), "clears the slot"
+    assert not notched.contains(Rect(Point(10, 1), Point(50, 8))), "reaches in"
+    for path, expected in (
+        ([Point(5, 3), Point(55, 3)], True),
+        ([Point(5, 3), Point(27, 12)], False),
+        ([Point(10, 14), Point(50, 14)], False),
+    ):
+        move = Trajectory2D.through([(p.x, p.y) for p in path])
+        assert trajectory_valid(notched, [], move) is expected, (
+            f"trajectory through {path} should be "
+            f"{'valid' if expected else 'invalid'} in the notched yard"
+        )
