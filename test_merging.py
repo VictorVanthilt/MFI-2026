@@ -82,9 +82,9 @@ def check_route(points, yard=None, forbidden=()):
         assert abs(move.bridge.vel(when)) < TOL, f"still moving at t={when}"
         assert abs(move.trolley.vel(when)) < TOL, f"still moving at t={when}"
         at = move.pos(when)
-        assert any(abs(at[0] - x) < 1e-6 and abs(at[1] - y) < 1e-6 for x, y in points), (
-            f"the load stops at {at}, which is not a waypoint"
-        )
+        assert any(
+            abs(at[0] - x) < 1e-6 and abs(at[1] - y) < 1e-6 for x, y in points
+        ), f"the load stops at {at}, which is not a waypoint"
         assert any(
             abs(at[0] - x) < 1e-6 and abs(at[1] - y) < 1e-6 for x, y in naive_stops
         ), f"merging added a stop at {at}"

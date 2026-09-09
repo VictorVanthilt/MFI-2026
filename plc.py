@@ -655,7 +655,8 @@ class Trajectory2D:
                 # running: either way nothing has come to a stop.
                 busy_until = end if busy_until is None else max(busy_until, end)
                 continue
-            stops.append(busy_until)   # everything stopped, and this starts it off again
+            # Everything had stopped, and this move is what sets it off again.
+            stops.append(busy_until)
             busy_until = end
         return stops
 
