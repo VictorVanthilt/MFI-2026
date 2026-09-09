@@ -1,5 +1,8 @@
 from typing import Self
-from plc import BRIDGE, TROLLEY
+
+import numpy as np
+
+from plc import BRIDGE, TROLLEY, Trajectory2D
 
 EPSILON = 1e-9
 
@@ -97,6 +100,14 @@ def seg_seg_intersect(a1: Point, a2: Point, b1: Point, b2: Point) -> bool:
     return True
 
 
+# Ray cast from a point to decide whether it is inside the yard. The slope is
+# deliberately irrational: a 45-degree ray leaves any lattice point exactly
+# through a lattice corner of the yard, and seg_seg_intersect drops both edges
+# meeting there, so the crossings come out even and an interior point reads as
+# outside.
+RAY = Point(1e9, 1e9 * 0.7071067811865476 * 1.2345678901234567)
+
+
 class Yard:
     def __init__(self, points: list[Point]):
         self.points = points
@@ -113,7 +124,7 @@ class Yard:
                 return False
             if seg_seg_intersect(
                 rect.center(),
-                rect.center() + Point(1e9, 1e9),
+                rect.center() + RAY,
                 self.points[i - 1],
                 self.points[i],
             ):
@@ -141,6 +152,43 @@ def path_valid(yard: Yard, forbidden_zones: list[Rect], path: list[Point]) -> bo
     return True
 
 
+def trajectory_points(move: Trajectory2D, n_points: int = 2000) -> list[Point]:
+    """Sample a Trajectory2D into the polyline that `path_valid` expects.
+
+    The handover times -- where one leg gives way to the next -- are always
+    sampled, so the corners of the path land exactly on the polyline instead
+    of being cut by the grid. The rest of the samples are uniform in time.
+    """
+    grid = np.linspace(move.t0, move.t_end, n_points)
+    grid = np.union1d(grid, move.handovers)
+    if grid.size < 2:
+        # A move that takes no time collapses to a single instant, and a
+        # one-point path would pass every check by having no steps at all.
+        grid = np.repeat(grid, 2)
+    x, y = move.pos(grid)
+    return [Point(float(px), float(py)) for px, py in zip(x, y)]
+
+
+def trajectory_valid(
+    yard: Yard,
+    forbidden_zones: list[Rect],
+    move: Trajectory2D,
+    n_points: int = 2000,
+) -> bool:
+    """Check the path a Trajectory2D actually traces against the yard.
+
+    `path_valid` judges a leg by the bounding box of its endpoints, which is
+    the right call for a waypoint list: the two axes run independently, so
+    anywhere in that box is reachable. Here the timing is already fixed, so
+    the box of each *sampled step* is a much tighter -- and still
+    conservative -- envelope around the real curve.
+
+    Raise `n_points` if the path skims a boundary: between two samples the
+    envelope is only as good as the grid is fine.
+    """
+    return path_valid(yard, forbidden_zones, trajectory_points(move, n_points))
+
+
 def naive_total_time(path: list[Point]) -> float:
     total_time = 0
     for i in range(len(path) - 1):
@@ -148,7 +196,10 @@ def naive_total_time(path: list[Point]) -> float:
         b = path[i + 1]
         trolley_dist = abs(a.y - b.y)
         bridge_dist = abs(a.x - b.x)
-        total_time += max(TROLLEY.time(trolley_dist), BRIDGE.time(bridge_dist))
+        total_time += max(
+            TROLLEY.trajectory(trolley_dist).duration,
+            BRIDGE.trajectory(bridge_dist).duration,
+        )
     return total_time
 
 
@@ -200,3 +251,15 @@ if __name__ == "__main__":
     print("Naive total time:", naive_total_time(path2))
     # Not a valid path, but just to see how well we can do
     print("Naive total time:", naive_total_time([a, b]))
+
+    # The same paths, judged as the trajectories they actually turn into. A
+    # leg's real curve stays inside the bounding box `path_valid` checks, so
+    # a valid waypoint list stays valid once it is driven -- and a straight
+    # run through a forbidden zone stays invalid.
+    for path, expected in ((path1, True), (path2, True), ([a, b], False)):
+        move = Trajectory2D.through([(p.x, p.y) for p in path])
+        assert trajectory_valid(yard, [forbidden1, forbidden2], move) is expected, (
+            f"trajectory through {path} should be "
+            f"{'valid' if expected else 'invalid'}"
+        )
+        print(f"Trajectory through {path}: {move.duration:.1f} s")
