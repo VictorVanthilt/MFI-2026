@@ -619,6 +619,11 @@ class Trajectory2D:
         so a waypoint list that cleared the yard still clears it -- the load
         just does not come to a standstill in between.
 
+        A leg that needs one axis only is the clear case for that, but two
+        diagonal legs in a row can still merge opportunistically: if one
+        axis's leg is the longer by a braking time, the other's fits inside it
+        whole, and the corner costs nothing.
+
         Three points at a time is a narrow view, so merging is not always a
         win: joining two legs can push the move past the n it needs to stay
         inside a_max, which widens all four of its pulses, and a joined move
@@ -811,12 +816,21 @@ class Trajectory2D:
 # Merging
 # ---------------------------------------------------------------------------
 #
-# Translated from mergingcode/func_merging.m, with three transcription slips
-# in it put right on the way: func_n is handed a_max where t_sway belongs;
-# jerkdistinv is handed the auxiliary axis's index where the main axis's jerk
-# belongs, and that axis's distance too, when the value wanted is the moveP2.ti
-# computed two lines below; and the branch that cannot merge out of a
-# standstill leaves Flag_standstill clear although the crane does stop there.
+# Translated from mergingcode/func_merging (1).m, the final strategy. The port
+# was first made against the draft func_merging.m, and had put right three
+# transcription slips in it on the way: func_n was handed a_max where t_sway
+# belongs; jerkdistinv was handed the auxiliary axis's index where the main
+# axis's jerk belongs, and that axis's distance too, when the value wanted is
+# the moveP2.ti computed two lines below; and the branch that cannot merge out
+# of a standstill leaves Flag_standstill clear although the crane does stop
+# there. The final MATLAB fixes the first two itself. The third stands as a
+# deviation -- there it is still Flag_standstill = 0 -- because `_stop_at`
+# clears `self.ongoing`, which is what a standstill is here.
+#
+# The sign checks `_runs_through` puts on the two axis-aligned merges are a
+# deviation as well, and still the sign checking left as a TODO at the foot of
+# examplecheck.m. The final MATLAB does check the sign in its new
+# diagonal-to-diagonal merge, but not in the older two.
 
 
 def _lone_axis(a, b) -> Optional[int]:
@@ -992,7 +1006,36 @@ class _Merger:
             self.t += max(run.ti, leg)
             return
 
-        # Neither leg is straight enough to join onto the next one.
+        # Neither leg is straight enough to join onto the next one, but there
+        # may still be an opportunistic merge in it. If one axis's leg into p2
+        # runs a braking time longer than the other's, that axis can carry on
+        # through p2 towards p3 while the other makes its whole leg inside
+        # that time, arriving on p2 and parking there before the crane
+        # crosses it.
+        legs = [self.components[axis].trajectory(p2[axis] - p1[axis])
+                for axis in (0, 1)]
+        for main in (0, 1):
+            other = 1 - main
+            step, ahead = p2[main] - p1[main], p3[main] - p2[main]
+            # The slack is measured against the t_p of the leg into p2, not of
+            # the joined move, which is what the MATLAB does. The two agree
+            # wherever both moves reach v_max; where they differ this is the
+            # stricter of the two, so it turns down the occasional merge that
+            # would in fact have fitted. Left as it is on purpose: the point
+            # of this class is what the PLC will really accept, and route.py
+            # scores every candidate route with it.
+            if (
+                legs[main].duration - legs[other].duration
+                >= 2.0 * legs[main].tp
+                and step * ahead > 0.0        # and not about to turn around
+            ):
+                run = self._start(main, p3[main], self.t)
+                run.reach(p2[main])
+                self._move(other, p2[other] - p1[other], self.t)
+                self.t += run.ti
+                return
+
+        # Not even that, so the crane stops on p2.
         self._stop_at(p1, p2)
 
     def _carry_on(self, p1, p2, p3):
@@ -1032,7 +1075,8 @@ class _Merger:
         self.t += max(legs)
 
 
-# Axis limits from toy_example.m
+# Axis limits from toy_example.m, and the same values the par matrix at the
+# head of mergingcode/func_merging (1).m is filled in with.
 BRIDGE = Component(a_max=0.30, v_max=2, t_sway=4)
 TROLLEY = Component(a_max=0.25, v_max=1, t_sway=5)
 
