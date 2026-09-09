@@ -628,6 +628,37 @@ class Trajectory2D:
         moves = (*_moves(self.bridge)[:-1], *_moves(self.trolley)[:-1])
         return sorted({move.t_end for move in moves})
 
+    @property
+    def standstills(self) -> list:
+        """When the load comes to a full stop, once for every time it does.
+
+        A move begins and ends at zero velocity and an axis stands still
+        between its moves, so the load is at rest exactly when neither axis
+        has a move running. Two moves that touch leave no gap on the clock,
+        but the load does stop between them, so a touch counts as much as a
+        gap does -- that instant is every waypoint of a `through` move, and
+        the ones `through_merged` could not merge away.
+
+        The start and the end of the whole move are left out; the load is at
+        rest there whatever it does in between.
+        """
+        spans = sorted(
+            (move.t0, move.t_end)
+            for move in (*_moves(self.bridge), *_moves(self.trolley))
+            if move.duration > 0.0
+        )
+
+        stops, busy_until = [], None
+        for start, end in spans:
+            if busy_until is None or start < busy_until:
+                # The very first move, or one that overlaps what is already
+                # running: either way nothing has come to a stop.
+                busy_until = end if busy_until is None else max(busy_until, end)
+                continue
+            stops.append(busy_until)   # everything stopped, and this starts it off again
+            busy_until = end
+        return stops
+
     def pos(self, time) -> tuple:
         """Position at absolute time(s) `time`, as (bridge, trolley)."""
         return (self.bridge.pos(time), self.trolley.pos(time))
@@ -666,10 +697,10 @@ class Trajectory2D:
         ax.add_collection(path)
         ax.figure.colorbar(path, ax=ax, label="time (s)")
 
-        handovers = self.handovers
-        if handovers:
-            ax.plot(*self.pos(handovers), "o", color="grey", markersize=4,
-                    label="handover")
+        stops = self.standstills
+        if stops:
+            ax.plot(*self.pos(stops), "o", color="grey", markersize=5,
+                    label="standstill")
         ax.plot(x[0], y[0], "o", color="tab:green", label="start")
         ax.plot(x[-1], y[-1], "s", color="tab:red", label="end")
 

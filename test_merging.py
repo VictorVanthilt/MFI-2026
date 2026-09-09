@@ -5,7 +5,8 @@ Run me: `python test_merging.py`.
 Merging is only allowed to take the standstills out of a route. Everything
 else has to survive it: the crane still passes through every waypoint, it
 still keeps inside a_max and v_max, every pulse is still a whole number of
-sway periods long, and a route that cleared the yard still clears it.
+sway periods long, a route that cleared the yard still clears it, and what
+standstills are left are waypoints the load really does stop on.
 """
 
 import numpy as np
@@ -72,7 +73,23 @@ def check_route(points, yard=None, forbidden=()):
             periods = leg.tp / axis.t_sway
             assert abs(periods - round(periods)) < TOL, f"t_p = {leg.tp}"
 
-    # 3. A route that cleared the yard still clears it: within a leg neither
+    # 3. The load only ever comes to a full stop on a waypoint, it really is
+    #    at rest where `standstills` says it is, and merging only ever takes
+    #    stops away -- it never invents a new place to stop.
+    naive_stops = [naive.pos(when) for when in naive.standstills]
+    assert len(move.standstills) <= len(naive_stops)
+    for when in move.standstills:
+        assert abs(move.bridge.vel(when)) < TOL, f"still moving at t={when}"
+        assert abs(move.trolley.vel(when)) < TOL, f"still moving at t={when}"
+        at = move.pos(when)
+        assert any(abs(at[0] - x) < 1e-6 and abs(at[1] - y) < 1e-6 for x, y in points), (
+            f"the load stops at {at}, which is not a waypoint"
+        )
+        assert any(
+            abs(at[0] - x) < 1e-6 and abs(at[1] - y) < 1e-6 for x, y in naive_stops
+        ), f"merging added a stop at {at}"
+
+    # 4. A route that cleared the yard still clears it: within a leg neither
     #    axis turns around, so the curve stays inside the bounding box that
     #    `path_valid` judged that leg by.
     if yard is not None:
