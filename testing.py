@@ -1,10 +1,18 @@
 from plc import Trajectory2D
 
-# move = Trajectory2D.through([(0, 12), (32, 12), (40, 6), (58, 6)])
-# move.plot()
-# print(move.t_end)
-
-move = Trajectory2D.through([(0, 12), (26, 0),  (58, 6)], t0=0.0)
+path1 = [(0, 12), (24, 2), (40, 2), (58, 6)]
+move = Trajectory2D.through(path1)
+print(move.t_end)
 move.plot()
-move.trolley.plot()
 
+move = Trajectory2D.through_merged(path1)
+print(move.t_end)
+move.plot()
+
+# path = [(0, 12), (26, 2), (32, 2), (58, 6)]
+# move = Trajectory2D.through_merged(path)
+# move.plot()
+# move.bridge.plot()
+# move.trolley.plot()
+# print(move.t_end)
+# move.plot()
