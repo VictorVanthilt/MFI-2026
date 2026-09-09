@@ -189,8 +189,52 @@ class Yard:
                     inside = not inside
         return inside
 
+    # Does the closed segment a-b stay inside the yard?
+    def contains_segment(self, a: Point, b: Point) -> bool:
+        # Whether the segment is in or out can only change where it meets an
+        # edge, so cut it at every such point and test the middle of each
+        # piece. Both ends being inside is not enough on its own: a segment
+        # can leave through a notch and come back, touching the walls only at
+        # the two points where it does.
+        span = b - a
+        length = span.x**2 + span.y**2
+        if length < EPSILON:
+            return self.contains_point(a)
+
+        cuts = {0.0, 1.0}
+        for i in range(len(self.points)):
+            p, q = self.points[i - 1], self.points[i]
+            edge = q - p
+            offset = p - a
+            denominator = span.x * edge.y - span.y * edge.x
+            if abs(denominator) < EPSILON:
+                # Parallel. Only an edge lying along the segment can cut it,
+                # and then it is the ends of the overlap that do.
+                if abs(offset.x * span.y - offset.y * span.x) < EPSILON:
+                    for corner in (p, q):
+                        reach = corner - a
+                        cuts.add((reach.x * span.x + reach.y * span.y) / length)
+                continue
+            t = (offset.x * edge.y - offset.y * edge.x) / denominator
+            u = (offset.x * span.y - offset.y * span.x) / denominator
+            if 0.0 <= u <= 1.0:
+                cuts.add(t)
+
+        ordered = sorted(x for x in cuts if 0.0 <= x <= 1.0)
+        return all(
+            self.contains_point(a + span * (0.5 * (s + t)))
+            for s, t in zip(ordered, ordered[1:])
+        )
+
     # Check if the rectangle is contained inside the yard
     def contains(self, rect: Rect) -> bool:
+        # A rectangle with no width or height is really a segment, and the
+        # tests below cannot see one leave the yard through a notch and come
+        # back: its corners are its two ends, no edge crosses it, and it
+        # strictly contains nothing. Walk it instead.
+        if rect.width() <= EPSILON or rect.height() <= EPSILON:
+            return self.contains_segment(rect.bottom_left, rect.top_right)
+
         # The rectangle is convex and the yard is a simple polygon, so the
         # rectangle is contained exactly when all four of its corners are in
         # the yard, no yard edge cuts across it, and no yard corner pokes into
@@ -290,24 +334,29 @@ def plot_route(yard, forbidden_zones, move, ax=None):
     span = max(high - low, 1e-9)
     ax.set_ylim(low - 0.07 * span, high + 0.3 * span)
 
-    # Say whether the route came out clear, and if it did not, of what. This
-    # is the curve the crane actually drives, which is a stricter question
-    # than the one `path_valid` asks of the waypoints it was given.
-    if trajectory_valid(yard, forbidden_zones, move):
-        note, alarm = "\u2713 valid path", None
-    elif trajectory_valid(yard, (), move):
-        note, alarm = "\u2717 enters a forbidden zone", "ENTERS A FORBIDDEN ZONE"
-        # The yard itself is clear, so any zone that fails on its own is one
-        # the crane actually drives into. Light those up.
-        for zone in forbidden_zones:
-            if not trajectory_valid(yard, [zone], move):
-                zone.plot(ax, facecolor=to_rgba(KEEP_OUT, 0.3), linewidth=2.0,
-                          zorder=6)
-    else:
-        note, alarm = "\u2717 leaves the yard", "LEAVES THE YARD"
+    # Say whether the route came out clear, and if it did not, of what. The
+    # test is the PLC's own, and it is a blunt one: per leg, the box spanned
+    # by the two waypoints, and does that box hit anything. It never looks at
+    # the curve the crane actually drives, so a move and its merged twin are
+    # judged the same -- see `trajectory_valid` for the stricter question.
+    alarm = None
+    if move.waypoints is not None:
+        route = [Point(x, y) for x, y in move.waypoints]
+        if path_valid(yard, forbidden_zones, route):
+            note = "\u2713 valid path"
+        elif path_valid(yard, (), route):
+            note, alarm = "\u2717 enters a forbidden zone", "ENTERS A FORBIDDEN ZONE"
+            # The yard itself is clear, so any zone that fails on its own is
+            # one a leg runs into. Light those up.
+            for zone in forbidden_zones:
+                if not path_valid(yard, [zone], route):
+                    zone.plot(ax, facecolor=to_rgba(KEEP_OUT, 0.3), linewidth=2.0,
+                              zorder=6)
+        else:
+            note, alarm = "\u2717 leaves the yard", "LEAVES THE YARD"
 
-    ax.set_title(note, loc="right", fontsize=9.5, family="monospace", pad=10,
-                 color=INK if alarm is None else KEEP_OUT)
+        ax.set_title(note, loc="right", fontsize=9.5, family="monospace", pad=10,
+                     color=INK if alarm is None else KEEP_OUT)
 
     if alarm:
         # A drawing that cannot be built gets stamped across the middle, and
