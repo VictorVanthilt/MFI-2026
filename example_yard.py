@@ -116,17 +116,18 @@ chosen_path_AM = [
     end_AM,
 ]
 
-simple_twobasin_yard = Yard([
-    Point(0, 0),
-    Point(0, 10),
-    Point(30, 10),
-    Point(30, 0),
-    Point(20, 0),
-    Point(20, 9.5),
-    Point(10, 9.5),
-    Point(10, 0),
-    # Point(20, 10),
-    # Point(10, 10),
+simple_twobasin_yard = Yard(
+    [
+        Point(0, 0),
+        Point(0, 10),
+        Point(30, 10),
+        Point(30, 0),
+        Point(20, 0),
+        Point(20, 9.5),
+        Point(10, 9.5),
+        Point(10, 0),
+        # Point(20, 10),
+        # Point(10, 10),
     ]
 )
 
@@ -182,14 +183,120 @@ chosen_path_LM = [
     end_LM,
 ]
 
+
+yard_AM2 = Yard(
+    [
+        Point(25000, 100) / 1000,
+        Point(25000, 34507) / 1000,
+        Point(26497, 34507) / 1000,
+        Point(26497, 34500) / 1000,
+        Point(26500, 34500) / 1000,
+        Point(26500, 31900) / 1000,
+        Point(52100, 31900) / 1000,
+        Point(52100, 36300) / 1000,
+        Point(111580, 36300) / 1000,
+        Point(111580, 31900) / 1000,
+        Point(111900, 31900) / 1000,
+        Point(111900, 29100) / 1000,
+        Point(163400, 29100) / 1000,
+        Point(163400, 26400) / 1000,
+        Point(175600, 26400) / 1000,
+        Point(175600, 31100) / 1000,
+        Point(177400, 31100) / 1000,
+        Point(177400, 26400) / 1000,
+        Point(194000, 26400) / 1000,
+        Point(194000, 32480) / 1000,
+        Point(193720, 32480) / 1000,
+        Point(193720, 34540) / 1000,
+        Point(196560, 34540) / 1000,
+        Point(196560, 32480) / 1000,
+        Point(196200, 32480) / 1000,
+        Point(196200, 26400) / 1000,
+        Point(232100, 26400) / 1000,
+        Point(232100, 36300) / 1000,
+        Point(278300, 36300) / 1000,
+        Point(278300, 32900) / 1000,
+        Point(281900, 32900) / 1000,
+        Point(281900, 20100) / 1000,
+        Point(291900, 20100) / 1000,
+        Point(291900, 16400) / 1000,
+        Point(309400, 16400) / 1000,
+        Point(309400, 5300) / 1000,
+        Point(301900, 5300) / 1000,
+        Point(301900, 100) / 1000,
+    ]
+)
+
+forbidden_zones_AM2 = [
+    Rect(
+        Point(152500, 25800) / 1000,
+        Point(163500, 29200) / 1000,
+    ),
+    Rect(
+        Point(141500, 25800) / 1000,
+        Point(158200, 29200) / 1000,
+    ),
+    Rect(
+        Point(130500, 25800) / 1000,
+        Point(147000, 29200) / 1000,
+    ),
+    Rect(
+        Point(119300, 25800) / 1000,
+        Point(136200, 29200) / 1000,
+    ),
+    Rect(
+        Point(112000, 25800) / 1000,
+        Point(119500, 29200) / 1000,
+    ),
+]
+
+# This one is only when the crane is loaded
+forbidden_zones_AM2_loaded = [
+    Rect(
+        Point(212000, 23750) / 1000,
+        Point(232000, 27500) / 1000,
+    )
+]
+
+start_AM2 = Point(300_000, 11_000) / 1000
+end_AM2 = Point(100_000, 33_000) / 1000
+
+BRIDGE_AM2_UNLOADED = Component(150 / 1000, 2000 / 1000, 3890 / 1000)
+TROLLEY_AM2_UNLOADED = Component(100 / 1000, 910 / 1000, 3890 / 1000)
+BRIDGE_AM2_LOADED = Component(150 / 1000, 2000 / 1000, 4820 / 1000)
+TROLLEY_AM2_LOADED = Component(100 / 1000, 910 / 1000, 4820 / 1000)
+
+chosen_path_AM2_unloaded = [
+    start_AM2,
+    Point(281300, 11000) / 1000,
+    Point(111399, 25199) / 1000,
+    end_AM2,
+]
+
+chosen_path_AM2_loaded = [
+    start_AM2,
+    Point(111399, 15800) / 1000,
+    end_AM2,
+]
+
 if __name__ == "__main__":
-    # ax = yard_screenshot.plot(forbidden_zones=forbidden_zones_screenshot)
-    # plt.show()
+    # move = Trajectory2D.through_merged(
+    #     [(p.x, p.y) for p in chosen_path_AM], BRIDGE_AM, TROLLEY_AM
+    # )
+    # plot_route(yard_AM, forbidden_zones_AM, move)
     move = Trajectory2D.through_merged(
-        [(p.x, p.y) for p in chosen_path_AM], BRIDGE_AM, TROLLEY_AM
+        [(p.x, p.y) for p in chosen_path_AM2_unloaded],
+        BRIDGE_AM2_UNLOADED,
+        TROLLEY_AM2_UNLOADED,
     )
-    plot_route(yard_AM, forbidden_zones_AM, move)
+    plot_route(yard_AM2, forbidden_zones_AM2, move)
     move = Trajectory2D.through_merged(
-        [(p.x, p.y) for p in chosen_path_LM], BRIDGE_LM, TROLLEY_LM
+        [(p.x, p.y) for p in chosen_path_AM2_loaded],
+        BRIDGE_AM2_LOADED,
+        TROLLEY_AM2_LOADED,
     )
-    plot_route(yard_LM, forbidden_zones_LM, move)
+    plot_route(yard_AM2, forbidden_zones_AM2 + forbidden_zones_AM2_loaded, move)
+    # move = Trajectory2D.through_merged(
+    #     [(p.x, p.y) for p in chosen_path_LM], BRIDGE_LM, TROLLEY_LM
+    # )
+    # plot_route(yard_LM, forbidden_zones_LM, move)
