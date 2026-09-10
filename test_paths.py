@@ -10,7 +10,9 @@ from matplotlib.colors import to_rgba
 from matplotlib.patches import Polygon, Rectangle
 from matplotlib.ticker import MaxNLocator, MultipleLocator
 
-from plc import INK, INK_SOFT, PAPER, RULE, RULE_FINE, BRIDGE, TROLLEY, Trajectory2D
+from plc import (
+    INK, INK_SOFT, PAPER, RULE, RULE_FINE, BRIDGE, TROLLEY, Trajectory2D, plot_moves,
+)
 
 EPSILON = 1e-9
 
@@ -328,12 +330,15 @@ class Yard:
         return ax
 
 
-def plot_route(yard, forbidden_zones, move, ax=None, save=None, aspect=2.0):
-    """Draw a crane move inside the yard it has to keep to.
+def plot_route(yard, forbidden_zones, moves, ax=None, save=None, aspect=2.0,
+               labels=None):
+    """Draw one crane move, or several, inside the yard they have to keep to.
 
     The yard and the zones it must stay out of go down first, then the path
-    the crane traces through them. Pass `ax` to draw onto existing axes; a new
-    figure is made and shown otherwise.
+    the crane traces through them. `moves` is one move or a list of them; a
+    list goes down on the one plan, each route tagged with its entry in
+    `labels`, or A, B, C... (see `plot_moves`). Pass `ax` to draw onto
+    existing axes; a new figure is made and shown otherwise.
 
     `save` writes the drawing out as well as putting it on screen. A plan of a
     yard ends up in a report, so it is a PDF -- vector, and it scales -- unless
@@ -342,9 +347,14 @@ def plot_route(yard, forbidden_zones, move, ax=None, save=None, aspect=2.0):
     about, and handing in `ax` saves the whole figure it belongs to rather
     than the one panel.
     """
+    if isinstance(moves, Trajectory2D):
+        moves = [moves]
+    if labels is None:
+        labels = [chr(ord("A") + i) for i in range(len(moves))]
+
     own_figure = ax is None
     ax = yard.plot(forbidden_zones, ax=ax, aspect=aspect)
-    move.plot(ax=ax, aspect=aspect)
+    plot_moves(moves, labels=labels, ax=ax, aspect=aspect)
 
     # A thin margin all round; the legend lives above the axes, so the yard
     # needs no headroom carved out of its own drawing.
@@ -357,13 +367,15 @@ def plot_route(yard, forbidden_zones, move, ax=None, save=None, aspect=2.0):
     # by the two waypoints, and does that box hit anything. It never looks at
     # the curve the crane actually drives, so a move and its merged twin are
     # judged the same -- see `trajectory_valid` for the stricter question.
-    alarm = None
-    if move.waypoints is not None:
+    checked = [(label, move) for label, move in zip(labels, moves)
+               if move.waypoints is not None]
+    faults = {}
+    for label, move in checked:
         route = [Point(x, y) for x, y in move.waypoints]
         if path_valid(yard, forbidden_zones, route):
-            note = "\u2713 valid path"
-        elif path_valid(yard, (), route):
-            note, alarm = "\u2717 enters a forbidden zone", "ENTERS A FORBIDDEN ZONE"
+            continue
+        if path_valid(yard, (), route):
+            faults[label] = "enters a forbidden zone"
             # The yard itself is clear, so any zone that fails on its own is
             # one a leg runs into. Light those up.
             for zone in forbidden_zones:
@@ -371,16 +383,29 @@ def plot_route(yard, forbidden_zones, move, ax=None, save=None, aspect=2.0):
                     zone.plot(ax, facecolor=to_rgba(KEEP_OUT, 0.3), linewidth=2.0,
                               zorder=6)
         else:
-            note, alarm = "\u2717 leaves the yard", "LEAVES THE YARD"
+            faults[label] = "leaves the yard"
 
+    # One route needs no naming; with several, each verdict says whose it is.
+    named = len(moves) > 1
+    if checked:
+        if named:
+            note = "  ".join(
+                f"{label} \u2717 {faults[label]}" if label in faults
+                else f"{label} \u2713"
+                for label, _ in checked
+            )
+        else:
+            note = f"\u2717 {faults[checked[0][0]]}" if faults else "\u2713 valid path"
         ax.set_title(note, loc="right", fontsize=9.5, family="monospace", pad=30,
-                     color=INK if alarm is None else KEEP_OUT)
+                     color=KEEP_OUT if faults else INK)
         # The legend floats just above the axes, so both titles move up a
         # band to keep out of its way.
         ax.set_title(ax.get_title(loc="left"), loc="left", fontsize=11,
                      color=INK, family="monospace", pad=30)
 
-    if alarm:
+    if faults:
+        alarm = "\n".join(f"{label} {fault}".upper() if named else fault.upper()
+                          for label, fault in faults.items())
         # A drawing that cannot be built gets stamped across the middle, and
         # ruled off on all four sides. There is no reading the plan without
         # seeing it.
@@ -395,11 +420,16 @@ def plot_route(yard, forbidden_zones, move, ax=None, save=None, aspect=2.0):
             spine.set_linewidth(1.8)
 
     # One legend row, floated above the axes so it can never sit on the
-    # yard, however wide and thin the yard turns out to be.
+    # yard, however wide and thin the yard turns out to be. Several routes
+    # each put in a start and an end; the key wants them once.
+    handles, names = ax.get_legend_handles_labels()
+    entries = dict(zip(names, handles))
     ax.legend(
+        list(entries.values()),
+        list(entries),
         loc="lower center",
         bbox_to_anchor=(0.5, 1.01),
-        ncol=len(ax.get_legend_handles_labels()[0]),
+        ncol=len(entries),
         frameon=False,
         fontsize=8.5,
         labelcolor=INK_SOFT,
