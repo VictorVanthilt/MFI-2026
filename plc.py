@@ -794,25 +794,46 @@ class Trajectory2D:
         filled where it came to a stop. Pass `ax` to draw onto existing axes
         (a yard outline, say); the axes come back either way.
         """
-        grid, x, y = self.sample(n_points)
-        speed = np.hypot(self.bridge.vel(grid), self.trolley.vel(grid))
+        return plot_moves([self], n_points=n_points, ax=ax, aspect=aspect)
 
-        own_figure = ax is None
-        if own_figure:
-            _, ax = plt.subplots(figsize=(10, 4), facecolor=PAPER)
-            ax.set_facecolor(PAPER)
 
-        # Colour the path by speed, the norm of the (bridge, trolley)
-        # velocity. In ink alone a corner the load sweeps through and one it
-        # stops dead on look alike; coloured, the slow stretches show up blue
-        # against the red of a cruise. The scale starts at a standstill and
-        # tops out at this move's own peak.
+def plot_moves(moves, labels=None, n_points: int = 600, ax=None,
+               aspect: float = 2.0):
+    """Draw one or more moves on the one site plan.
+
+    Each path is drawn as `Trajectory2D.plot` describes, and they share
+    everything that can be shared: one speed scale, so a colour is the same
+    speed whichever route it is on, and one beat, so the marks keep a common
+    clock. With more than one route each is tagged -- `labels`, or A, B, C...
+    -- where it runs furthest from the rest, the one place it cannot be taken
+    for another, and the title keys the tags to their times.
+    """
+    moves = list(moves)
+    if labels is None:
+        labels = [chr(ord("A") + i) for i in range(len(moves))]
+    samples = [move.sample(n_points) for move in moves]
+    speeds = [np.hypot(move.bridge.vel(grid), move.trolley.vel(grid))
+              for move, (grid, _, _) in zip(moves, samples)]
+
+    own_figure = ax is None
+    if own_figure:
+        _, ax = plt.subplots(figsize=(10, 4), facecolor=PAPER)
+        ax.set_facecolor(PAPER)
+
+    # Colour the path by speed, the norm of the (bridge, trolley) velocity.
+    # In ink alone a corner the load sweeps through and one it stops dead on
+    # look alike; coloured, the slow stretches show up blue against the red of
+    # a cruise. The scale starts at a standstill and tops out at the fastest
+    # any of the routes goes.
+    norm = Normalize(0.0, max(speed.max() for speed in speeds) or 1.0)
+    beat = _beat(max(move.duration for move in moves))
+    for move, (_, x, y), speed in zip(moves, samples, speeds):
         points = np.stack([x, y], axis=1).reshape(-1, 1, 2)
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
         path = LineCollection(
             segments,
             cmap=SPEED,
-            norm=Normalize(0.0, speed.max() or 1.0),
+            norm=norm,
             array=0.5 * (speed[:-1] + speed[1:]),
             linewidth=2.4,
             capstyle="round",
@@ -820,34 +841,22 @@ class Trajectory2D:
         )
         ax.add_collection(path)
 
-        # An axes appended under this one, so the scale is exactly as wide as
-        # the yard it belongs to rather than as wide as the figure. The
-        # divider has to be told of the stretch: left to itself it lays the
-        # pair out drawn to scale, and the yard shrinks sideways to fit.
-        divider = AxesDivider(ax, yref=axes_size.AxesY(ax, aspect=aspect))
-        ax.set_axes_locator(divider.new_locator(nx=0, ny=0))
-        cax = divider.append_axes("bottom", size=0.14, pad=0.42)
-        bar = ax.figure.colorbar(path, cax=cax, orientation="horizontal")
-        bar.set_label("speed (m/s)", fontsize=8.5, color=INK_SOFT)
-        bar.outline.set_visible(False)
-        bar.ax.tick_params(labelsize=8, colors=INK_SOFT, length=2)
-
-        # One mark per `_beat` seconds: the crane covers less ground between
+        # One mark per `beat` seconds: the crane covers less ground between
         # two of them where it is slow, so the spacing is its speed.
-        beats = np.arange(self.t0, self.t_end - 1e-9, _beat(self.duration))[1:]
+        beats = np.arange(move.t0, move.t_end - 1e-9, beat)[1:]
         if len(beats):
-            ax.plot(*self.pos(beats), linestyle="none", marker="o", markersize=3,
+            ax.plot(*move.pos(beats), linestyle="none", marker="o", markersize=3,
                     color=PAPER, markeredgecolor=INK, markeredgewidth=0.9,
-                    zorder=5, label=f"every {_beat(self.duration):.0f} s")
+                    zorder=5, label=f"every {beat:.0f} s")
 
         # Every waypoint the route was given, told apart by whether the load
         # had to stop on it. A merged one is run straight through, so it is
         # left hollow; one the load comes to rest on is filled in.
-        if self.waypoints is not None and self.times is not None:
-            merged = self.merged
+        if move.waypoints is not None and move.times is not None:
+            merged = move.merged
             groups = (
-                ([p for p, m in zip(self.waypoints, merged) if m], PAPER, "merged"),
-                ([p for p, m in zip(self.waypoints, merged) if not m], INK, "stop"),
+                ([p for p, m in zip(move.waypoints, merged) if m], PAPER, "merged"),
+                ([p for p, m in zip(move.waypoints, merged) if not m], INK, "stop"),
             )
             for marks, face, label in groups:
                 if marks:
@@ -857,9 +866,9 @@ class Trajectory2D:
         else:
             # Built by hand rather than from a route, so there are no
             # waypoints to judge; ring the standstills on their own.
-            stops = self.standstills
+            stops = move.standstills
             if stops:
-                ax.plot(*self.pos(stops), linestyle="none", marker="o",
+                ax.plot(*move.pos(stops), linestyle="none", marker="o",
                         markersize=9, color=PAPER, markeredgecolor=INK,
                         markeredgewidth=1.6, zorder=6, label="standstill")
         # Both ends are stops too, so they carry a waypoint mark already; the
@@ -870,21 +879,57 @@ class Trajectory2D:
                     markeredgecolor=PAPER, markeredgewidth=1.4, zorder=7,
                     label=label)
 
-        ax.set_title(self._title, loc="left", fontsize=11, color=INK,
-                     family="monospace", pad=10)
-        ax.set_xlabel("bridge (m)", fontsize=9, color=INK_SOFT)
-        ax.set_ylabel("trolley (m)", fontsize=9, color=INK_SOFT)
-        ax.tick_params(labelsize=8, colors=INK_SOFT, length=2)
-        ax.set_aspect(aspect)
-        ax.autoscale_view()
-        ax.grid(True, color=RULE, linewidth=0.7)
-        ax.set_axisbelow(True)
-        ax.legend(loc="upper center", ncol=6, frameon=False, fontsize=8.5,
-                  labelcolor=INK_SOFT, handletextpad=0.4, columnspacing=1.6)
-        if own_figure:
-            plt.tight_layout()
-            plt.show()
-        return ax
+    # An axes appended under this one, so the scale is exactly as wide as the
+    # yard it belongs to rather than as wide as the figure. The divider has
+    # to be told of the stretch: left to itself it lays the pair out drawn to
+    # scale, and the yard shrinks sideways to fit. Every path shares the one
+    # scale, so any of them will do to draw it from.
+    divider = AxesDivider(ax, yref=axes_size.AxesY(ax, aspect=aspect))
+    ax.set_axes_locator(divider.new_locator(nx=0, ny=0))
+    cax = divider.append_axes("bottom", size=0.14, pad=0.42)
+    bar = ax.figure.colorbar(path, cax=cax, orientation="horizontal")
+    bar.set_label("speed (m/s)", fontsize=8.5, color=INK_SOFT)
+    bar.outline.set_visible(False)
+    bar.ax.tick_params(labelsize=8, colors=INK_SOFT, length=2)
+
+    if len(moves) > 1:
+        # Distances as drawn, with the trolley stretched by `aspect`: that is
+        # what decides whether two routes look apart on the page.
+        drawn = [np.stack([x, aspect * y], axis=1) for _, x, y in samples]
+        for i, (label, (_, x, y)) in enumerate(zip(labels, samples)):
+            others = np.concatenate([p for j, p in enumerate(drawn) if j != i])
+            gaps = np.linalg.norm(drawn[i][:, None] - others[None], axis=2)
+            k = int(np.argmax(gaps.min(axis=1)))
+            ax.text(x[k], y[k], label, ha="center", va="center", fontsize=8.5,
+                    fontweight="bold", family="monospace", color=INK, zorder=8,
+                    bbox={"boxstyle": "round,pad=0.3", "facecolor": PAPER,
+                          "edgecolor": INK, "linewidth": 1.0})
+        title = "total time: " + "  ".join(
+            f"{label} {move.duration:.1f} s" for label, move in zip(labels, moves)
+        )
+    else:
+        title = moves[0]._title
+
+    ax.set_title(title, loc="left", fontsize=11, color=INK,
+                 family="monospace", pad=10)
+    ax.set_xlabel("bridge (m)", fontsize=9, color=INK_SOFT)
+    ax.set_ylabel("trolley (m)", fontsize=9, color=INK_SOFT)
+    ax.tick_params(labelsize=8, colors=INK_SOFT, length=2)
+    ax.set_aspect(aspect)
+    ax.autoscale_view()
+    ax.grid(True, color=RULE, linewidth=0.7)
+    ax.set_axisbelow(True)
+    # Each route puts in its own start, end and the rest; the key wants each
+    # of them once.
+    handles, names = ax.get_legend_handles_labels()
+    entries = dict(zip(names, handles))
+    ax.legend(list(entries.values()), list(entries), loc="upper center", ncol=6,
+              frameon=False, fontsize=8.5, labelcolor=INK_SOFT,
+              handletextpad=0.4, columnspacing=1.6)
+    if own_figure:
+        plt.tight_layout()
+        plt.show()
+    return ax
 
 
 # ---------------------------------------------------------------------------
