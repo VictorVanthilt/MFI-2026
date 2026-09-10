@@ -637,15 +637,19 @@ class Trajectory2D:
         A leg that needs one axis only is the clear case for that, but two
         diagonal legs in a row can still merge opportunistically: if one
         axis's leg is the longer by a braking time, the other's fits inside it
-        whole, and the corner costs nothing.
+        whole, and the corner costs nothing. The same goes mid-move: when the
+        running axis cannot carry on but the other one's leg is the longer by
+        a braking time, the other axis takes over and runs through instead.
 
         Three points at a time is a narrow view, so merging is not always a
         win: joining two legs can push the move past the n it needs to stay
         inside a_max, which widens all four of its pulses, and a joined move
-        is held back far enough to still pass the middle point. Together those
-        can cost a second or two more than the standstill they save. Rare --
-        one route in a few hundred, and only ever by a little -- but worth
-        knowing when this is what scores a route.
+        is held back far enough to still pass the middle point. Those cost a
+        second or two. The cruise can cost far more: a joined move keeps the
+        speed it was sized with, so one sized on a short hop and then
+        stretched over a long leg crawls the whole way, minutes behind
+        stopping on every point. Rare -- a route in a hundred or so at most --
+        but worth knowing when this is what scores a route.
 
         `points` is a list of (bridge, trolley) tuples. The axes default to
         BRIDGE and TROLLEY.
@@ -875,21 +879,28 @@ class Trajectory2D:
 # Merging
 # ---------------------------------------------------------------------------
 #
-# Translated from mergingcode/func_merging (1).m, the final strategy. The port
+# Translated from mergingcode/func_merging (2).m, the final strategy. The port
 # was first made against the draft func_merging.m, and had put right three
 # transcription slips in it on the way: func_n was handed a_max where t_sway
 # belongs; jerkdistinv was handed the auxiliary axis's index where the main
 # axis's jerk belongs, and that axis's distance too, when the value wanted is
 # the moveP2.ti computed two lines below; and the branch that cannot merge out
 # of a standstill leaves Flag_standstill clear although the crane does stop
-# there. The final MATLAB fixes the first two itself. The third stands as a
+# there. The later MATLAB fixes the first two itself. The third stands as a
 # deviation -- there it is still Flag_standstill = 0 -- because `_stop_at`
 # clears `self.ongoing`, which is what a standstill is here.
 #
-# The sign checks `_runs_through` puts on the two axis-aligned merges are a
-# deviation as well, and still the sign checking left as a TODO at the foot of
-# examplecheck.m. The final MATLAB does check the sign in its new
-# diagonal-to-diagonal merge, but not in the older two.
+# (2) puts sign checks on the two axis-aligned merges, but compares the signs
+# on the axis that does not move on the leg being tested, where both are
+# zero. Taken literally, that lets 1a merge only three points on one line --
+# and then even a crane that doubles back -- and leaves 1b unreachable, as
+# its conditions come out the same as 1a's. `_runs_through` compares them on
+# the main axis instead, which is what the comments around them describe.
+#
+# (2) also lets a move under way hand over to the other axis (the takeover
+# in `_carry_on`), and that one is guarded here where the MATLAB is not: see
+# there. The MATLAB also reads tpj before it is ever set when the other axis
+# has no leg to make; a zero leg has t_p = 0 here, and cannot take over.
 
 
 def _lone_axis(a, b) -> Optional[int]:
@@ -907,14 +918,14 @@ def _lone_axis(a, b) -> Optional[int]:
 def _runs_through(axis: int, p1, p2, p3) -> bool:
     """Can one axis take p1 -> p2 -> p3 in a single move?
 
-    Only if it does not turn around on the way. Merging sizes the joined move
-    on the distance from p1 to p3, and that is the distance actually travelled
-    only when both legs push the axis the same way. (The MATLAB skips the
-    check -- it is the sign checking left as a TODO in examplecheck.m -- and a
-    crane that doubles back would be given far too short a move.)
+    Only if both legs push it the same way. Merging sizes the joined move on
+    the distance from p1 to p3, and a crane that doubles back would be given
+    far too short a move. An axis that stops dead on p2 has nothing to run
+    through it either: merging into that corner would pass p2 with the move
+    already over, and the crane would then have to stop on the next point as
+    well. This is sign(p3 - p2) == sign(p2 - p1) in func_merging (2).m.
     """
-    step, ahead = p2[axis] - p1[axis], p3[axis] - p2[axis]
-    return step * ahead >= 0.0 and step + ahead != 0.0
+    return (p2[axis] - p1[axis]) * (p3[axis] - p2[axis]) > 0.0
 
 
 class _Ongoing:
@@ -976,9 +987,11 @@ class _Merger:
 
     The axis carrying the joined move is the main axis (`i` in the MATLAB);
     the other one (`j`) makes a plain standstill-to-standstill move in the
-    shadow of it. Merging is only allowed when there is room for that move and
-    for the main axis's own braking on top, which is what keeps the crane
-    passing exactly through every waypoint instead of cutting the corner.
+    shadow of it -- or, when its leg is the longer one, takes over as the main
+    axis while the old one comes to rest. Merging is only allowed when there
+    is room for the shadowed move and for the main axis's own braking on top,
+    which is what keeps the crane passing exactly through every waypoint
+    instead of cutting the corner.
     """
 
     def __init__(self, components, start, t0: float = 0.0):
@@ -1098,17 +1111,20 @@ class _Merger:
         self._stop_at(p1, p2)
 
     def _carry_on(self, p1, p2, p3):
-        """The crane passes p1 mid-move. Can that move swallow p2 as well?"""
+        """The crane passes p1 mid-move. Can that move swallow p2 as well?
+
+        And if it cannot, can the other axis take over from it?
+        """
         run = self.ongoing
         main, other = run.axis, 1 - run.axis
         step = p2[main] - p1[main]      # what the main axis does on this leg
         ahead = p3[main] - p2[main]     # ... and what it does on the next one
-        leg = self.components[other].trajectory(p2[other] - p1[other]).duration
+        leg = self.components[other].trajectory(p2[other] - p1[other])
 
         if (
             not run.braking                          # not yet slowing down, and
             and step * ahead > 0.0                   # not about to turn around,
-            and run.time_left - leg >= 2.0 * run.move.tp   # and time to spare
+            and run.time_left - leg.duration >= 2.0 * run.move.tp  # time to spare
         ):
             # All three hold, so the move is stretched to reach p3 as well:
             # the cruise takes over the distance the braking would have
@@ -1119,6 +1135,33 @@ class _Merger:
             run.reach(p2[main])
             self.t += run.ti - was
             return
+
+        if (
+            leg.duration - run.time_left >= 2.0 * leg.tp   # the other leg is longer,
+            and _runs_through(other, p1, p2, p3)           # and carries on past p2
+        ):
+            # The other axis's leg into p2 outlasts what is left of the main
+            # move by a braking time, so the two swap: the main axis brakes to
+            # rest on p2 while the other one takes p1 -> p2 -> p3 in a single
+            # move, and becomes the main axis from here on.
+            #
+            # (2) grants this on that slack alone, but the slack is measured
+            # on the leg into p2 and the move it starts is sized to p3. One
+            # that falls short of v_max covers the ground to p2 faster than
+            # the leg would -- fast enough, at times, to cross p2 before the
+            # old main axis has got there, so the crane would cut the corner.
+            # Here the takeover is only granted when the old main axis is at
+            # rest on p2 by the time the other one crosses it; otherwise the
+            # crane stops on p2, as (2) does whenever it does not merge.
+            takeover = _Ongoing(other, self.components[other].trajectory(
+                p3[other] - self.x[other], self.x[other], self.t
+            ))
+            takeover.reach(p2[other])
+            if takeover.ti >= run.time_left:
+                self._land()
+                self.ongoing = takeover
+                self.t += takeover.ti
+                return
 
         # Merging stops here: the main axis brakes to a standstill on p2,
         # which is where its move was always going to end.
@@ -1135,7 +1178,7 @@ class _Merger:
 
 
 # Axis limits from toy_example.m, and the same values the par matrix at the
-# head of mergingcode/func_merging (1).m is filled in with.
+# head of mergingcode/func_merging (2).m is filled in with.
 BRIDGE = Component(a_max=0.30, v_max=2, t_sway=4)
 TROLLEY = Component(a_max=0.25, v_max=1, t_sway=5)
 
