@@ -823,9 +823,11 @@ def plot_moves(moves, labels=None, n_points: int = 600, ax=None,
     # Colour the path by speed, the norm of the (bridge, trolley) velocity.
     # In ink alone a corner the load sweeps through and one it stops dead on
     # look alike; coloured, the slow stretches show up blue against the red of
-    # a cruise. The scale starts at a standstill and tops out at the fastest
-    # any of the routes goes.
-    norm = Normalize(0.0, max(speed.max() for speed in speeds) or 1.0)
+    # a cruise. The scale runs from a standstill to the fastest the crane can
+    # go at all, both axes flat out, so one colour is one speed on every plot.
+    norm = Normalize(0.0, max(math.hypot(move.bridge.component.v_max,
+                                         move.trolley.component.v_max)
+                              for move in moves))
     beat = _beat(max(move.duration for move in moves))
     for move, (_, x, y), speed in zip(moves, samples, speeds):
         points = np.stack([x, y], axis=1).reshape(-1, 1, 2)
