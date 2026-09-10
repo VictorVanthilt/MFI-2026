@@ -279,23 +279,188 @@ chosen_path_AM2_loaded = [
     end_AM2,
 ]
 
+yard_AM3 = Yard(
+    [
+        Point(-84400, -219100) / 1000,
+        Point(-84400, -230900) / 1000,
+        Point(-74400, -230900) / 1000,
+        Point(-74400, -246100) / 1000,
+        Point(-84400, -246100) / 1000,
+        Point(-84400, -254900) / 1000,
+        Point(24900, -254900) / 1000,
+        Point(24900, -250400) / 1000,
+        Point(33600, -250400) / 1000,
+        Point(33600, -254900) / 1000,
+        Point(144200, -254900) / 1000,
+        Point(144200, -232100) / 1000,
+        Point(112900, -232100) / 1000,
+        Point(112900, -219600) / 1000,
+        Point(85100, -219600) / 1000,
+        Point(85100, -223600) / 1000,
+        Point(64971, -223600) / 1000,
+        Point(47629, -223600) / 1000,
+        Point(40800, -223600) / 1000,
+        Point(40800, -229600) / 1000,
+        Point(36100, -229600) / 1000,
+        Point(36100, -231600) / 1000,
+        Point(33600, -231600) / 1000,
+        Point(33600, -234790) / 1000,
+        Point(12600, -234800) / 1000,
+        Point(12600, -229600) / 1000,
+        Point(-4400, -229600) / 1000,
+        Point(-4400, -230800) / 1000,
+        Point(-30100, -230800) / 1000,
+        Point(-30100, -219100) / 1000,
+    ]
+)
+
+forbidden_zones_AM3 = [
+    Rect(
+        Point(-8800, -230700) / 1000,
+        Point(-4500, -229500) / 1000,
+    ),
+    Rect(
+        Point(-8800, -236000) / 1000,
+        Point(1700, -229500) / 1000,
+    ),
+    Rect(
+        Point(-4500, -236000) / 1000,
+        Point(4700, -229500) / 1000,
+    ),
+    Rect(
+        Point(-2300, -236000) / 1000,
+        Point(7700, -229500) / 1000,
+    ),
+    Rect(
+        Point(700, -236000) / 1000,
+        Point(10700, -229500) / 1000,
+    ),
+    Rect(
+        Point(3700, -236000) / 1000,
+        Point(12700, -229500) / 1000,
+    ),
+    Rect(
+        Point(6700, -236000) / 1000,
+        Point(12700, -229500) / 1000,
+    ),
+    Rect(
+        Point(-15500, -237900) / 1000,
+        Point(-4500, -230700) / 1000,
+    ),
+    Rect(
+        Point(-12000, -237900) / 1000,
+        Point(-4500, -229500) / 1000,
+    ),
+    Rect(
+        Point(-12000, -237900) / 1000,
+        Point(-1300, -229500) / 1000,
+    ),
+    Rect(
+        Point(76110, -228500) / 1000,
+        Point(84110, -223500) / 1000,
+    ),
+    Rect(
+        Point(64400, -228500) / 1000,
+        Point(72400, -223500) / 1000,
+    ),
+    Rect(
+        Point(52300, -228500) / 1000,
+        Point(60300, -223500) / 1000,
+    ),
+    Rect(
+        Point(40440, -228500) / 1000,
+        Point(48100, -223380) / 1000,
+    ),
+    Rect(
+        Point(33500, -255600) / 1000,
+        Point(164500, -250600) / 1000,
+    ),
+]
+
+start1_AM3 = Point(-32000, -220000) / 1000
+end1_AM3 = Point(95000, -220000) / 1000
+chosen_path1_AM3_unloaded = [
+    start1_AM3,
+    Point(-30700, -238501) / 1000,
+    Point(36700, -238501) / 1000,
+    Point(85700, -230200) / 1000,
+    end1_AM3,
+]
+
+start2_AM3 = Point(-29217, -251703) / 1000
+end2_AM3 = Point(-77180, -226670) / 1000
+
+chosen_path2_AM3_unloaded = [
+    start2_AM3,
+    Point(-51508, -246700) / 1000,
+    Point(-73800, -230300) / 1000,
+    end2_AM3,
+]
+
+chosen_path2_AM3_loaded = [
+    start2_AM3,
+    Point(-29217, -251703) / 1000,
+    Point(-73800, -238500) / 1000,
+    Point(-73800, -230300) / 1000,
+    end2_AM3,
+]
+
+start3_AM3 = Point(106500, -221120) / 1000
+end3_AM3 = Point(119124, -245270) / 1000
+
+chosen_path3_AM3_unloaded = [
+    start3_AM3,
+    Point(112300, -238985) / 1000,
+    end3_AM3,
+]
+
+BRIDGE_AM3_UNLOADED = Component(240 / 1000, 1680 / 1000, 3890 / 1000)
+TROLLEY_AM3_UNLOADED = Component(210 / 1000, 790 / 1000, 3890 / 1000)
+
+BRIDGE_AM3_LOADED = Component(240 / 1000, 1680 / 1000, 4820 / 1000)
+TROLLEY_AM3_LOADED = Component(210 / 1000, 790 / 1000, 4820 / 1000)
+
 if __name__ == "__main__":
     # move = Trajectory2D.through_merged(
     #     [(p.x, p.y) for p in chosen_path_AM], BRIDGE_AM, TROLLEY_AM
     # )
     # plot_route(yard_AM, forbidden_zones_AM, move)
+    # move = Trajectory2D.through_merged(
+    #     [(p.x, p.y) for p in chosen_path_AM2_unloaded],
+    #     BRIDGE_AM2_UNLOADED,
+    #     TROLLEY_AM2_UNLOADED,
+    # )
+    # plot_route(yard_AM2, forbidden_zones_AM2, move)
+    # move = Trajectory2D.through_merged(
+    #     [(p.x, p.y) for p in chosen_path_AM2_loaded],
+    #     BRIDGE_AM2_LOADED,
+    #     TROLLEY_AM2_LOADED,
+    # )
+    # plot_route(yard_AM2, forbidden_zones_AM2 + forbidden_zones_AM2_loaded, move)
     move = Trajectory2D.through_merged(
-        [(p.x, p.y) for p in chosen_path_AM2_unloaded],
-        BRIDGE_AM2_UNLOADED,
-        TROLLEY_AM2_UNLOADED,
+        [(p.x, p.y) for p in chosen_path1_AM3_unloaded],
+        BRIDGE_AM3_UNLOADED,
+        TROLLEY_AM3_UNLOADED,
     )
-    plot_route(yard_AM2, forbidden_zones_AM2, move)
+    plot_route(yard_AM3, forbidden_zones_AM3, move)
     move = Trajectory2D.through_merged(
-        [(p.x, p.y) for p in chosen_path_AM2_loaded],
-        BRIDGE_AM2_LOADED,
-        TROLLEY_AM2_LOADED,
+        [(p.x, p.y) for p in chosen_path2_AM3_unloaded],
+        BRIDGE_AM3_UNLOADED,
+        TROLLEY_AM3_UNLOADED,
     )
-    plot_route(yard_AM2, forbidden_zones_AM2 + forbidden_zones_AM2_loaded, move)
+    plot_route(yard_AM3, forbidden_zones_AM3, move)
+    move = Trajectory2D.through_merged(
+        [(p.x, p.y) for p in chosen_path2_AM3_loaded],
+        BRIDGE_AM3_LOADED,
+        TROLLEY_AM3_LOADED,
+    )
+    plot_route(yard_AM3, forbidden_zones_AM3, move)
+    move = Trajectory2D.through_merged(
+        [(p.x, p.y) for p in chosen_path3_AM3_unloaded],
+        BRIDGE_AM3_UNLOADED,
+        TROLLEY_AM3_UNLOADED,
+    )
+    plot_route(yard_AM3, forbidden_zones_AM3, move)
     # move = Trajectory2D.through_merged(
     #     [(p.x, p.y) for p in chosen_path_LM], BRIDGE_LM, TROLLEY_LM
     # )
