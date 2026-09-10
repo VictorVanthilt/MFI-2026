@@ -1,5 +1,7 @@
 import math
 import sys
+import tempfile
+from pathlib import Path
 from typing import Self
 
 import matplotlib.pyplot as plt
@@ -236,21 +238,30 @@ class Yard:
             return self.contains_segment(rect.bottom_left, rect.top_right)
 
         # The rectangle is convex and the yard is a simple polygon, so the
-        # rectangle is contained exactly when all four of its corners are in
-        # the yard, no yard edge cuts across it, and no yard corner pokes into
-        # it. The last two are what a notch in the boundary trips -- a notch
-        # can reach into the rectangle while leaving every corner inside.
-        # Touching counts as contained: a path may run along a wall.
+        # rectangle is contained exactly when its whole border is in the
+        # yard, no yard edge cuts across it, no yard corner pokes into it,
+        # and its middle is inside. The corner and crossing tests catch a
+        # notch reaching into the rectangle; the border walk catches the
+        # case those two are blind to -- a yard edge running along one side
+        # of the rectangle and out through it, which crosses nothing and
+        # leaves every corner on a wall, while the inside of the rectangle
+        # is out of the yard; and the centre catches a rectangle exactly
+        # filling a notch, whose border is all wall and whose inside is all
+        # outside. Touching counts as contained: a path may run along a wall.
         if not all(self.contains_point(corner) for corner in rect.corners()):
             return False
+        corners = rect.corners()
+        for a, b in zip(corners, corners[1:] + corners[:1]):
+            if not self.contains_segment(a, b):
+                return False
         for i in range(len(self.points)):
             if rect.strictly_contains_point(self.points[i - 1]):
                 return False
             if rect.intersects_segment(self.points[i - 1], self.points[i]):
                 return False
-        return True
+        return self.contains_point(rect.center())
 
-    def plot(self, forbidden_zones=(), ax=None):
+    def plot(self, forbidden_zones=(), ax=None, aspect: float = 2.0):
         """Draw the yard, and the zones inside it that have to stay clear.
 
         The sheet the route is drawn on: graph paper, the yard walls inked
@@ -266,9 +277,10 @@ class Yard:
 
         if ax is None:
             # A yard is usually much wider than it is deep, and the axes are
-            # drawn to scale, so a square figure would be mostly empty.
+            # drawn `aspect` times stretched upwards, so a square figure would
+            # be mostly empty.
             span = max(max(xs) - min(xs), 1e-9)
-            height = 10.0 * (max(ys) - min(ys)) / span
+            height = 10.0 * aspect * (max(ys) - min(ys)) / span
             _, ax = plt.subplots(
                 figsize=(10.0, min(max(height + 2.4, 3.4), 9.0)), facecolor=PAPER
             )
@@ -309,30 +321,36 @@ class Yard:
             spine.set_visible(side in ("left", "bottom"))
             spine.set_color(RULE)
             spine.set_linewidth(0.8)
-        ax.set_aspect("equal")
+        ax.set_aspect(aspect)
         ax.autoscale_view()
         # A band above the yard for the legend, and a little air below it.
         ax.margins(0.03, 0.22)
         return ax
 
 
-def plot_route(yard, forbidden_zones, move, ax=None):
+def plot_route(yard, forbidden_zones, move, ax=None, save=None, aspect=2.0):
     """Draw a crane move inside the yard it has to keep to.
 
     The yard and the zones it must stay out of go down first, then the path
     the crane traces through them. Pass `ax` to draw onto existing axes; a new
     figure is made and shown otherwise.
+
+    `save` writes the drawing out as well as putting it on screen. A plan of a
+    yard ends up in a report, so it is a PDF -- vector, and it scales -- unless
+    the name given says otherwise; matplotlib takes the format from the
+    suffix. A folder that is not there yet is made rather than complained
+    about, and handing in `ax` saves the whole figure it belongs to rather
+    than the one panel.
     """
     own_figure = ax is None
-    ax = yard.plot(forbidden_zones, ax=ax)
-    move.plot(ax=ax)
+    ax = yard.plot(forbidden_zones, ax=ax, aspect=aspect)
+    move.plot(ax=ax, aspect=aspect)
 
-    # A band above everything drawn for the legend to sit in, and a thin one
-    # below. `margins` would give the same to both, and the one under the
-    # yard is dead space.
+    # A thin margin all round; the legend lives above the axes, so the yard
+    # needs no headroom carved out of its own drawing.
     low, high = ax.dataLim.intervaly
     span = max(high - low, 1e-9)
-    ax.set_ylim(low - 0.07 * span, high + 0.3 * span)
+    ax.set_ylim(low - 0.07 * span, high + 0.07 * span)
 
     # Say whether the route came out clear, and if it did not, of what. The
     # test is the PLC's own, and it is a blunt one: per leg, the box spanned
@@ -355,8 +373,12 @@ def plot_route(yard, forbidden_zones, move, ax=None):
         else:
             note, alarm = "\u2717 leaves the yard", "LEAVES THE YARD"
 
-        ax.set_title(note, loc="right", fontsize=9.5, family="monospace", pad=10,
+        ax.set_title(note, loc="right", fontsize=9.5, family="monospace", pad=30,
                      color=INK if alarm is None else KEEP_OUT)
+        # The legend floats just above the axes, so both titles move up a
+        # band to keep out of its way.
+        ax.set_title(ax.get_title(loc="left"), loc="left", fontsize=11,
+                     color=INK, family="monospace", pad=30)
 
     if alarm:
         # A drawing that cannot be built gets stamped across the middle, and
@@ -372,9 +394,11 @@ def plot_route(yard, forbidden_zones, move, ax=None):
             spine.set_color(KEEP_OUT)
             spine.set_linewidth(1.8)
 
-    # One legend row, in the band above the yard: `best` puts it on the yard.
+    # One legend row, floated above the axes so it can never sit on the
+    # yard, however wide and thin the yard turns out to be.
     ax.legend(
-        loc="upper center",
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.01),
         ncol=len(ax.get_legend_handles_labels()[0]),
         frameon=False,
         fontsize=8.5,
@@ -386,6 +410,16 @@ def plot_route(yard, forbidden_zones, move, ax=None):
         # A little more than the default all round: the note is right-aligned
         # to the edge of the plan, and wants air outside it.
         plt.tight_layout(pad=1.6)
+
+    if save is not None:
+        # Written out before the figure goes up: a backend that hands it to a
+        # window can leave nothing behind to save afterwards.
+        out = Path(save)
+        out = out if out.suffix else out.with_suffix(".pdf")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        ax.figure.savefig(out, bbox_inches="tight")
+
+    if own_figure:
         plt.show()
     return ax
 def path_valid(yard: Yard, forbidden_zones: list[Rect], path: list[Point]) -> bool:
@@ -620,6 +654,20 @@ if __name__ == "__main__":
             ax=scratch,
         )
     notched.plot(ax=scratch)
+
+    # Saving writes a real file, a PDF when the name does not say otherwise,
+    # and makes the folder it was pointed at.
+    with tempfile.TemporaryDirectory() as folder:
+        plot_route(
+            yard,
+            [forbidden1, forbidden2],
+            Trajectory2D.through_merged([(p.x, p.y) for p in path2]),
+            ax=scratch,
+            save=Path(folder) / "plans" / "route",
+        )
+        written = Path(folder, "plans", "route.pdf")
+        assert written.exists(), "plot_route(save=...) wrote nothing"
+        assert written.read_bytes()[:5] == b"%PDF-", "what it wrote is not a pdf"
     plt.close()
 
     # `python test_paths.py --plot` draws the test problem instead of only

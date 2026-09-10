@@ -121,7 +121,8 @@ if __name__ == "__main__":
         [(0, 12), (58, 12), (58, 6)],              # test_paths.py, path2
         [(0, 12), (50, 12), (58, 6)],              # testing.py
         [(0, 12), (58, 14), (58, 6)],              # plc.py; the trolley turns
-        [(0, 12), (26, 0), (58, 6)],               # testing.py; all diagonal
+        [(0, 12), (26, 0), (58, 6)],               # all diagonal, no room to merge
+        [(0, 12), (40, 10), (58, 6)],              # all diagonal, and room for it
         [(0, 3), (10, 3), (25, 3), (40, 3), (58, 8)],           # one long merge
         [(0, 12), (20, 12), (20, 5), (45, 5), (45, 14), (58, 14)],  # a staircase
     ]

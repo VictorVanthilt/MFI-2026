@@ -12,8 +12,9 @@ import numpy as np
 import sympy as sp
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
-from matplotlib.colors import LinearSegmentedColormap
-from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.colors import LinearSegmentedColormap, Normalize
+from mpl_toolkits.axes_grid1 import axes_size
+from mpl_toolkits.axes_grid1.axes_divider import AxesDivider
 
 # ---------------------------------------------------------------------------
 # Symbols
@@ -116,10 +117,14 @@ PAPER = "#FFFFFF"
 RULE = "#E3E8ED"         # the grid the drawing sits on
 RULE_FINE = "#F1F4F7"
 
-# The clock, as one hue running light to dark. A ramp is a magnitude, and a
-# magnitude gets one hue -- several would read as categories.
-CLOCK = LinearSegmentedColormap.from_list(
-    "clock", ["#8FB8DC", "#2E6FA7", "#0E3A5F"]
+TRACE = "#2B6AA0"        # the line on a profile plot
+
+# Speed, blue for slow through grey to red for fast. The two ends are what the
+# eye goes looking for -- where the crane crawls and where it cruises -- so
+# they get the hues; every stop holds at least 3:1 against the paper, so no
+# stretch of the path fades out.
+SPEED = LinearSegmentedColormap.from_list(
+    "speed", ["#2166AC", "#8C9299", "#D7301F"]
 )
 
 
@@ -146,7 +151,7 @@ def _plot_profile(t, jerk, accel, vel, pos, boundaries=(), title=None):
         ("jerk", "accel", "vel", "pos"),
         ("m/s³", "m/s²", "m/s", "m"),
     ):
-        a.plot(t, values, color=CLOCK(0.55), linewidth=1.8, solid_capstyle="round")
+        a.plot(t, values, color=TRACE, linewidth=1.8, solid_capstyle="round")
         a.set_ylabel(f"{label} ({unit})", fontsize=9, color=INK_SOFT)
         for boundary in boundaries:
             a.axvline(boundary, color=INK_SOFT, linewidth=0.8, alpha=0.5)
@@ -780,32 +785,35 @@ class Trajectory2D:
             np.asarray(self.trolley.pos(grid), dtype=float),
         )
 
-    def plot(self, n_points: int = 600, ax=None):
+    def plot(self, n_points: int = 600, ax=None, aspect: float = 2.0):
         """Draw the path traced through the yard, as a site plan.
 
-        Ink on paper: the route runs light to dark with the clock, a mark on
-        it every few seconds so its speed can be read off directly -- they
-        bunch up where the crane is slow -- and every waypoint marked, hollow
-        where merging carried the load straight through and filled where it
-        came to a stop. Pass `ax` to draw onto existing axes (a yard outline,
-        say); the axes come back either way.
+        Ink on paper: the route runs blue to red with the crane's speed, a
+        mark on it every few seconds to keep the clock, and every waypoint
+        marked, hollow where merging carried the load straight through and
+        filled where it came to a stop. Pass `ax` to draw onto existing axes
+        (a yard outline, say); the axes come back either way.
         """
         grid, x, y = self.sample(n_points)
+        speed = np.hypot(self.bridge.vel(grid), self.trolley.vel(grid))
 
         own_figure = ax is None
         if own_figure:
             _, ax = plt.subplots(figsize=(10, 4), facecolor=PAPER)
             ax.set_facecolor(PAPER)
 
-        # Colour the path by time -- in real space the clock is otherwise
-        # invisible, and a corner where one axis waits for the other looks
-        # like any other.
+        # Colour the path by speed, the norm of the (bridge, trolley)
+        # velocity. In ink alone a corner the load sweeps through and one it
+        # stops dead on look alike; coloured, the slow stretches show up blue
+        # against the red of a cruise. The scale starts at a standstill and
+        # tops out at this move's own peak.
         points = np.stack([x, y], axis=1).reshape(-1, 1, 2)
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
         path = LineCollection(
             segments,
-            cmap=CLOCK,
-            array=grid[:-1],
+            cmap=SPEED,
+            norm=Normalize(0.0, speed.max() or 1.0),
+            array=0.5 * (speed[:-1] + speed[1:]),
             linewidth=2.4,
             capstyle="round",
             zorder=4,
@@ -813,10 +821,14 @@ class Trajectory2D:
         ax.add_collection(path)
 
         # An axes appended under this one, so the scale is exactly as wide as
-        # the yard it belongs to rather than as wide as the figure.
-        cax = make_axes_locatable(ax).append_axes("bottom", size="7%", pad=0.42)
+        # the yard it belongs to rather than as wide as the figure. The
+        # divider has to be told of the stretch: left to itself it lays the
+        # pair out drawn to scale, and the yard shrinks sideways to fit.
+        divider = AxesDivider(ax, yref=axes_size.AxesY(ax, aspect=aspect))
+        ax.set_axes_locator(divider.new_locator(nx=0, ny=0))
+        cax = divider.append_axes("bottom", size=0.14, pad=0.42)
         bar = ax.figure.colorbar(path, cax=cax, orientation="horizontal")
-        bar.set_label("time (s)", fontsize=8.5, color=INK_SOFT)
+        bar.set_label("speed (m/s)", fontsize=8.5, color=INK_SOFT)
         bar.outline.set_visible(False)
         bar.ax.tick_params(labelsize=8, colors=INK_SOFT, length=2)
 
@@ -863,7 +875,7 @@ class Trajectory2D:
         ax.set_xlabel("bridge (m)", fontsize=9, color=INK_SOFT)
         ax.set_ylabel("trolley (m)", fontsize=9, color=INK_SOFT)
         ax.tick_params(labelsize=8, colors=INK_SOFT, length=2)
-        ax.set_aspect("equal")
+        ax.set_aspect(aspect)
         ax.autoscale_view()
         ax.grid(True, color=RULE, linewidth=0.7)
         ax.set_axisbelow(True)
