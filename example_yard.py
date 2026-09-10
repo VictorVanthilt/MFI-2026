@@ -116,6 +116,19 @@ chosen_path_AM = [
     end_AM,
 ]
 
+simple_twobasin_yard = Yard([
+    Point(0, 0),
+    Point(0, 10),
+    Point(30, 10),
+    Point(30, 0),
+    Point(20, 0),
+    Point(20, 9.5),
+    Point(10, 9.5),
+    Point(10, 0),
+    # Point(20, 10),
+    # Point(10, 10),
+    ]
+)
 
 yard_LM = Yard(
     [
